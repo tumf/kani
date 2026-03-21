@@ -1,0 +1,139 @@
+# Kani Smart Router – Default Configuration
+# ------------------------------------------
+# Env vars: use ${VAR_NAME} syntax for secrets.
+
+host: "0.0.0.0"
+port: 8420
+
+default_provider: openrouter
+default_profile: auto
+
+# ---------------------------------------------------------------------------
+# Providers
+# ---------------------------------------------------------------------------
+providers:
+  openrouter:
+    name: openrouter
+    base_url: "https://openrouter.ai/api/v1"
+    api_key: "${OPENROUTER_API_KEY}"
+  cliproxy:
+    name: cliproxy
+    base_url: "http://127.0.0.1:8317/v1"
+    api_key: "local-test-key"
+
+# ---------------------------------------------------------------------------
+# Routing Profiles
+# ---------------------------------------------------------------------------
+profiles:
+
+  # ── auto: balanced cost / quality ──────────────────────────────────────
+  auto:
+    tiers:
+      SIMPLE:
+        primary: "google/gemini-2.5-flash"
+        fallback:
+          - "google/gemini-2.5-flash-lite"
+          - "nvidia/gpt-oss-120b"
+        provider: default
+      MEDIUM:
+        primary: "moonshotai/kimi-k2.5"
+        fallback:
+          - "google/gemini-2.5-flash"
+          - "openai/gpt-4.1-mini"
+        provider: default
+      COMPLEX:
+        primary: "google/gemini-3.1-pro"
+        fallback:
+          - "anthropic/claude-sonnet-4.6"
+          - "openai/gpt-5.3-codex"
+        provider: default
+      REASONING:
+        primary: "x-ai/grok-4-1-fast-reasoning"
+        fallback:
+          - "google/gemini-2.5-pro"
+          - "anthropic/claude-sonnet-4.6"
+        provider: default
+
+  # ── eco: cheapest viable models ────────────────────────────────────────
+  eco:
+    tiers:
+      SIMPLE:
+        primary: "nvidia/gpt-oss-120b"
+        fallback:
+          - "google/gemini-2.5-flash-lite"
+          - "meta-llama/llama-4-maverick"
+        provider: default
+      MEDIUM:
+        primary: "google/gemini-2.5-flash-lite"
+        fallback:
+          - "nvidia/gpt-oss-120b"
+          - "openai/gpt-4.1-mini"
+        provider: default
+      COMPLEX:
+        primary: "google/gemini-2.5-flash"
+        fallback:
+          - "moonshotai/kimi-k2.5"
+          - "openai/gpt-4.1-mini"
+        provider: default
+      REASONING:
+        primary: "google/gemini-2.5-pro"
+        fallback:
+          - "google/gemini-2.5-flash"
+          - "moonshotai/kimi-k2.5"
+        provider: default
+
+  # ── premium: best quality models ───────────────────────────────────────
+  premium:
+    tiers:
+      SIMPLE:
+        primary: "moonshotai/kimi-k2.5"
+        fallback:
+          - "google/gemini-2.5-flash"
+          - "openai/gpt-4.1-mini"
+        provider: default
+      MEDIUM:
+        primary: "openai/gpt-5.3-codex"
+        fallback:
+          - "anthropic/claude-sonnet-4.6"
+          - "moonshotai/kimi-k2.5"
+        provider: default
+      COMPLEX:
+        primary: "anthropic/claude-opus-4.6"
+        fallback:
+          - "openai/gpt-5.3-codex"
+          - "google/gemini-3.1-pro"
+        provider: default
+      REASONING:
+        primary: "anthropic/claude-sonnet-4.6"
+        fallback:
+          - "anthropic/claude-opus-4.6"
+          - "x-ai/grok-4-1-fast-reasoning"
+        provider: default
+
+  # ── agentic: optimized for tool use / function calling ─────────────────
+  agentic:
+    tiers:
+      SIMPLE:
+        primary: "openai/gpt-4o-mini"
+        fallback:
+          - "google/gemini-2.5-flash"
+          - "moonshotai/kimi-k2.5"
+        provider: default
+      MEDIUM:
+        primary: "moonshotai/kimi-k2.5"
+        fallback:
+          - "openai/gpt-4o-mini"
+          - "anthropic/claude-sonnet-4.6"
+        provider: default
+      COMPLEX:
+        primary: "anthropic/claude-sonnet-4.6"
+        fallback:
+          - "moonshotai/kimi-k2.5"
+          - "openai/gpt-5.3-codex"
+        provider: default
+      REASONING:
+        primary: "anthropic/claude-sonnet-4.6"
+        fallback:
+          - "anthropic/claude-opus-4.6"
+          - "x-ai/grok-4-1-fast-reasoning"
+        provider: default

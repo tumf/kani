@@ -1,0 +1,149 @@
+"""Kani configuration models and loader.
+
+Supports YAML config files with ${ENV_VAR} resolution and merging with defaults.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+class ProviderConfig(BaseModel):
+    """A backend LLM provider (OpenRouter, Anthropic, local proxy, etc.)."""
+    name: str  # e.g. 'openrouter', 'cliproxy', 'anthropic'
+    base_url: str  # e.g. 'https://openrouter.ai/api/v1'
+    api_key: str = ''  # can reference env var with ${ENV_VAR}
+
+
+class TierModelConfig(BaseModel):
+    """Model selection for a single complexity tier within a profile."""
+    primary: str  # model ID e.g. 'google/gemini-2.5-flash'
+    fallback: list[str] = Field(default_factory=list)  # fallback model IDs
+    provider: str = 'default'  # which provider to use ('default' -> default_provider)
+
+
+class ProfileConfig(BaseModel):
+    """A routing profile (auto, eco, premium, agentic)."""
+    tiers: dict[str, TierModelConfig]  # SIMPLE, MEDIUM, COMPLEX, REASONING
+
+
+class KaniConfig(BaseModel):
+    """Top-level Kani configuration."""
+    host: str = '0.0.0.0'
+    port: int = 8420
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    default_provider: str = 'openrouter'
+    profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
+    default_profile: str = 'auto'
+
+
+# ---------------------------------------------------------------------------
+# Env-var resolution
+# ---------------------------------------------------------------------------
+
+_ENV_RE = re.compile(r'\$\{([^}]+)\}')
+
+
+def resolve_env(value: str) -> str:
+    """Replace ${VAR} placeholders with environment variable values."""
+    def _replace(m: re.Match) -> str:
+        var = m.group(1)
+        return os.environ.get(var, '')
+    return _ENV_RE.sub(_replace, value)
+
+
+def resolve_env_recursive(obj: Any) -> Any:
+    """Walk a data structure and resolve all ${VAR} strings."""
+    if isinstance(obj, str):
+        return resolve_env(obj)
+    if isinstance(obj, dict):
+        return {k: resolve_env_recursive(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [resolve_env_recursive(v) for v in obj]
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CONFIG_PATHS = [
+    Path('config.yaml'),
+    Path('config.yml'),
+    Path('/etc/kani/config.yaml'),
+]
+
+
+def _find_config_file(explicit_path: str | Path | None = None) -> Path | None:
+    """Locate a config file, checking explicit path then defaults."""
+    if explicit_path is not None:
+        p = Path(explicit_path).expanduser()
+        return p if p.is_file() else None
+
+    # Check env var
+    env_path = os.environ.get('KANI_CONFIG')
+    if env_path:
+        p = Path(env_path).expanduser()
+        if p.is_file():
+            return p
+
+    # Search default locations
+    for candidate in _DEFAULT_CONFIG_PATHS:
+        if candidate.is_file():
+            return candidate
+
+    return None
+
+
+def load_config(
+    path: str | Path | None = None,
+    *,
+    overrides: dict[str, Any] | None = None,
+) -> KaniConfig:
+    """Load KaniConfig from a YAML file with env-var resolution.
+
+    Args:
+        path: Explicit path to config YAML, or None to auto-discover.
+        overrides: Dict of overrides merged on top of file config.
+
+    Returns:
+        Fully resolved KaniConfig instance.
+    """
+    raw: dict[str, Any] = {}
+
+    config_file = _find_config_file(path)
+    if config_file is not None:
+        with open(config_file) as f:
+            loaded = yaml.safe_load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+
+    # Merge overrides
+    if overrides:
+        raw = _deep_merge(raw, overrides)
+
+    # Resolve env vars in raw data
+    raw = resolve_env_recursive(raw)
+
+    return KaniConfig.model_validate(raw)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge *override* into *base* (override wins)."""
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
