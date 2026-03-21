@@ -206,9 +206,16 @@ class Router:
         estimated_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
 
         try:
-            from kani.scorer import Scorer
+            from kani.scorer import LLMClassifier, Scorer
 
-            scorer = Scorer()
+            llm_clf = None
+            if self.config.llm_classifier:
+                llm_clf = LLMClassifier(
+                    model=self.config.llm_classifier.model,
+                    base_url=self.config.llm_classifier.base_url,
+                    api_key=self.config.llm_classifier.api_key,
+                )
+            scorer = Scorer(llm_classifier=llm_clf)
             result = scorer.classify(prompt)
             tier_val = result.tier
             # Tier may be an enum or string

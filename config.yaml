@@ -1,12 +1,20 @@
-# Kani Smart Router – Default Configuration
+# Kani Smart Router – Configuration (CLI Proxy-centric)
 # ------------------------------------------
 # Env vars: use ${VAR_NAME} syntax for secrets.
 
 host: "0.0.0.0"
 port: 18420
 
-default_provider: openrouter
+default_provider: cliproxy
 default_profile: auto
+
+# ---------------------------------------------------------------------------
+# LLM Classifier (escalation when rules confidence < 0.7)
+# ---------------------------------------------------------------------------
+llm_classifier:
+  model: "glm-4.5-air"
+  base_url: "http://127.0.0.1:8317/v1"
+  api_key: "local-test-key"
 
 # ---------------------------------------------------------------------------
 # Providers
@@ -22,118 +30,132 @@ providers:
     api_key: "local-test-key"
 
 # ---------------------------------------------------------------------------
-# Routing Profiles
+# Routing Profiles (all models must exist in CLI Proxy)
 # ---------------------------------------------------------------------------
+# Available models on cliproxy:
+#   claude-3-5-haiku-20241022, claude-3-7-sonnet-20250219,
+#   claude-haiku-4-5-20251001, claude-opus-4-1-20250805,
+#   claude-opus-4-20250514, claude-opus-4-5-20251101, claude-opus-4-6,
+#   claude-sonnet-4-20250514, claude-sonnet-4-5-20250929, claude-sonnet-4-6,
+#   deepseek/deepseek-v3.2, deepseek/deepseek-v3.2-speciale,
+#   glm-4.5, glm-4.5-air, glm-4.6, glm-4.7, glm-5,
+#   google/gemini-3.1-flash-image-preview, google/gemini-3.1-pro-preview,
+#   gpt-4o, gpt-5, gpt-5-codex, gpt-5-codex-mini, gpt-5.1, gpt-5.1-codex,
+#   gpt-5.1-codex-max, gpt-5.1-codex-mini, gpt-5.2, gpt-5.2-codex,
+#   gpt-5.3-codex, gpt-5.3-codex-spark, gpt-5.4,
+#   openrouter/auto, x-ai/grok-4.20-beta, x-ai/grok-4.20-multi-agent-beta
+# ---------------------------------------------------------------------------
+
 profiles:
 
   # ── auto: balanced cost / quality ──────────────────────────────────────
   auto:
     tiers:
       SIMPLE:
-        primary: "google/gemini-2.5-flash"
+        primary: "glm-4.5-air"
         fallback:
-          - "google/gemini-2.5-flash-lite"
-          - "nvidia/gpt-oss-120b"
+          - "claude-haiku-4-5-20251001"
+          - "gpt-5-codex-mini"
         provider: default
       MEDIUM:
-        primary: "moonshotai/kimi-k2.5"
+        primary: "gpt-5"
         fallback:
-          - "google/gemini-2.5-flash"
-          - "openai/gpt-4.1-mini"
+          - "claude-sonnet-4-6"
+          - "deepseek/deepseek-v3.2"
         provider: default
       COMPLEX:
-        primary: "google/gemini-3.1-pro"
+        primary: "claude-opus-4-6"
         fallback:
-          - "anthropic/claude-sonnet-4.6"
-          - "openai/gpt-5.3-codex"
+          - "gpt-5.3-codex"
+          - "google/gemini-3.1-pro-preview"
         provider: default
       REASONING:
-        primary: "x-ai/grok-4-1-fast-reasoning"
+        primary: "claude-sonnet-4-6"
         fallback:
-          - "google/gemini-2.5-pro"
-          - "anthropic/claude-sonnet-4.6"
+          - "claude-opus-4-6"
+          - "x-ai/grok-4.20-beta"
         provider: default
 
   # ── eco: cheapest viable models ────────────────────────────────────────
   eco:
     tiers:
       SIMPLE:
-        primary: "nvidia/gpt-oss-120b"
+        primary: "glm-4.5-air"
         fallback:
-          - "google/gemini-2.5-flash-lite"
-          - "meta-llama/llama-4-maverick"
+          - "claude-3-5-haiku-20241022"
+          - "gpt-5-codex-mini"
         provider: default
       MEDIUM:
-        primary: "google/gemini-2.5-flash-lite"
+        primary: "glm-4.5"
         fallback:
-          - "nvidia/gpt-oss-120b"
-          - "openai/gpt-4.1-mini"
+          - "glm-4.5-air"
+          - "deepseek/deepseek-v3.2"
         provider: default
       COMPLEX:
-        primary: "google/gemini-2.5-flash"
+        primary: "deepseek/deepseek-v3.2"
         fallback:
-          - "moonshotai/kimi-k2.5"
-          - "openai/gpt-4.1-mini"
+          - "gpt-5"
+          - "glm-4.6"
         provider: default
       REASONING:
-        primary: "google/gemini-2.5-pro"
+        primary: "deepseek/deepseek-v3.2-speciale"
         fallback:
-          - "google/gemini-2.5-flash"
-          - "moonshotai/kimi-k2.5"
+          - "gpt-5"
+          - "glm-4.6"
         provider: default
 
   # ── premium: best quality models ───────────────────────────────────────
   premium:
     tiers:
       SIMPLE:
-        primary: "moonshotai/kimi-k2.5"
+        primary: "gpt-5"
         fallback:
-          - "google/gemini-2.5-flash"
-          - "openai/gpt-4.1-mini"
+          - "claude-sonnet-4-6"
+          - "glm-4.7"
         provider: default
       MEDIUM:
-        primary: "openai/gpt-5.3-codex"
+        primary: "gpt-5.3-codex"
         fallback:
-          - "anthropic/claude-sonnet-4.6"
-          - "moonshotai/kimi-k2.5"
+          - "claude-opus-4-6"
+          - "gpt-5.2-codex"
         provider: default
       COMPLEX:
-        primary: "anthropic/claude-opus-4.6"
+        primary: "claude-opus-4-6"
         fallback:
-          - "openai/gpt-5.3-codex"
-          - "google/gemini-3.1-pro"
+          - "gpt-5.4"
+          - "gpt-5.3-codex"
         provider: default
       REASONING:
-        primary: "anthropic/claude-sonnet-4.6"
+        primary: "claude-opus-4-6"
         fallback:
-          - "anthropic/claude-opus-4.6"
-          - "x-ai/grok-4-1-fast-reasoning"
+          - "gpt-5.4"
+          - "x-ai/grok-4.20-beta"
         provider: default
 
   # ── agentic: optimized for tool use / function calling ─────────────────
   agentic:
     tiers:
       SIMPLE:
-        primary: "openai/gpt-4o-mini"
+        primary: "gpt-5-codex-mini"
         fallback:
-          - "google/gemini-2.5-flash"
-          - "moonshotai/kimi-k2.5"
+          - "claude-haiku-4-5-20251001"
+          - "glm-4.5-air"
         provider: default
       MEDIUM:
-        primary: "moonshotai/kimi-k2.5"
+        primary: "gpt-5-codex"
         fallback:
-          - "openai/gpt-4o-mini"
-          - "anthropic/claude-sonnet-4.6"
+          - "claude-sonnet-4-6"
+          - "gpt-5"
         provider: default
       COMPLEX:
-        primary: "anthropic/claude-sonnet-4.6"
+        primary: "claude-sonnet-4-6"
         fallback:
-          - "moonshotai/kimi-k2.5"
-          - "openai/gpt-5.3-codex"
+          - "gpt-5.3-codex"
+          - "claude-opus-4-6"
         provider: default
       REASONING:
-        primary: "anthropic/claude-sonnet-4.6"
+        primary: "claude-opus-4-6"
         fallback:
-          - "anthropic/claude-opus-4.6"
-          - "x-ai/grok-4-1-fast-reasoning"
+          - "claude-sonnet-4-6"
+          - "x-ai/grok-4.20-multi-agent-beta"
         provider: default

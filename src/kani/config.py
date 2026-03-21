@@ -42,6 +42,14 @@ class ProfileConfig(BaseModel):
     tiers: dict[str, TierModelConfig]  # SIMPLE, MEDIUM, COMPLEX, REASONING
 
 
+class LLMClassifierConfig(BaseModel):
+    """Configuration for the LLM-as-judge escalation classifier."""
+
+    model: str = "google/gemini-2.5-flash-lite"
+    base_url: str = "https://openrouter.ai/api/v1"
+    api_key: str = ""
+
+
 class KaniConfig(BaseModel):
     """Top-level Kani configuration."""
 
@@ -51,6 +59,7 @@ class KaniConfig(BaseModel):
     default_provider: str = "openrouter"
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     default_profile: str = "auto"
+    llm_classifier: LLMClassifierConfig | None = None
 
 
 # ---------------------------------------------------------------------------

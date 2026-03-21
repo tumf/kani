@@ -193,15 +193,25 @@ profiles:
         primary: "x-ai/grok-4-1-fast-reasoning"
         fallback: ["anthropic/claude-sonnet-4.6"]
       # provider: per-tier override (optional)
+
+# LLM classifier for low-confidence escalation (optional)
+llm_classifier:
+  model: "google/gemini-2.5-flash-lite"
+  base_url: "https://openrouter.ai/api/v1"
+  api_key: "${OPENROUTER_API_KEY}"
 ```
 
 - `${VAR}` syntax resolves environment variables
 - Each tier can specify its own `provider` or inherit `default_provider`
-- Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml`
+- Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
 
 ## LLM escalation
 
-When the rules engine isn't confident (< 0.7), kani asks a cheap LLM:
+When the rules engine isn't confident (< 0.7), kani asks a cheap LLM.
+
+**Preferred: configure via `config.yaml`** (see `llm_classifier` section above).
+
+Alternatively, use environment variables (overridden by config.yaml if both are set):
 
 | Env var | Default | Description |
 |---------|---------|-------------|
@@ -213,7 +223,7 @@ Cost: ~$0.0001 per escalation. Timeout: 2s.
 
 ## Routing logs
 
-All decisions are logged to `~/.kani/logs/routing-YYYY-MM-DD.jsonl`:
+All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` (default: `~/.local/state/kani/log/`):
 
 ```json
 {"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.1, "confidence": 0.85, "method": "rules", "agentic_score": 0.0}
@@ -237,6 +247,7 @@ src/kani/
 ├── router.py    # Tier → model+provider mapping
 ├── proxy.py     # FastAPI OpenAI-compatible server
 ├── config.py    # YAML config loading, env var resolution
+├── dirs.py      # XDG-compliant directory paths (config, data, logs)
 ├── logger.py    # JSONL routing log
 └── cli.py       # Click CLI
 ```
