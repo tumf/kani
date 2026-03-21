@@ -85,11 +85,20 @@ def resolve_env_recursive(obj: Any) -> Any:
 # Config loading
 # ---------------------------------------------------------------------------
 
-_DEFAULT_CONFIG_PATHS = [
-    Path("config.yaml"),
-    Path("config.yml"),
-    Path("/etc/kani/config.yaml"),
-]
+
+def _default_config_paths() -> list[Path]:
+    """Return ordered list of config file search paths.
+
+    Priority: ./config.yaml → $XDG_CONFIG_HOME/kani/config.yaml → /etc/kani/config.yaml
+    """
+    from kani.dirs import config_dir
+
+    return [
+        Path("config.yaml"),
+        Path("config.yml"),
+        config_dir() / "config.yaml",
+        Path("/etc/kani/config.yaml"),
+    ]
 
 
 def _find_config_file(explicit_path: str | Path | None = None) -> Path | None:
@@ -105,8 +114,8 @@ def _find_config_file(explicit_path: str | Path | None = None) -> Path | None:
         if p.is_file():
             return p
 
-    # Search default locations
-    for candidate in _DEFAULT_CONFIG_PATHS:
+    # Search default locations (XDG-aware)
+    for candidate in _default_config_paths():
         if candidate.is_file():
             return candidate
 

@@ -1,5 +1,8 @@
 # 🦀 kani
 
+[![CI](https://github.com/tumf/kani/actions/workflows/ci.yml/badge.svg)](https://github.com/tumf/kani/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 LLM smart router. Classifies prompts by complexity and routes to the optimal model.
 
 OpenAI API-compatible proxy — drop in as a base URL and let kani pick the right model automatically.
@@ -20,7 +23,7 @@ Request → 15-Dimension Scorer → Tier → Model Selection → Upstream Provid
 2. **Rules engine** — 15-dimension weighted scoring (ClawRouter port, MIT)
 3. **LLM-as-judge** — cheap LLM escalation when rules confidence < 0.7
 
-Every request is logged to `~/.kani/logs/` as training data for future model improvement.
+Every request is logged to `$XDG_STATE_HOME/kani/log/` (default: `~/.local/state/kani/log/`) as training data for future model improvement.
 
 ## Scoring dimensions
 

@@ -56,7 +56,7 @@ Cost: ~$0.0001 per escalation. Timeout: 2s.
 
 ## Routing logs
 
-All decisions are logged to `~/.kani/logs/routing-YYYY-MM-DD.jsonl`:
+All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl`:
 
 ```json
 {"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.1, "confidence": 0.85, "method": "rules", "agentic_score": 0.0}

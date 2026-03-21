@@ -18,7 +18,18 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_LOG_DIR = Path(os.environ.get("KANI_LOG_DIR", Path.home() / ".kani" / "logs"))
+
+def _default_log_dir() -> Path:
+    from kani.dirs import log_dir
+
+    return log_dir()
+
+
+_LOG_DIR = (
+    Path(os.environ.get("KANI_LOG_DIR", ""))
+    if os.environ.get("KANI_LOG_DIR")
+    else _default_log_dir()
+)
 _write_lock = threading.Lock()
 
 
