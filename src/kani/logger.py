@@ -56,9 +56,7 @@ class RoutingLogger:
                 "score": result.score,
                 "confidence": result.confidence,
                 "method": method_str,
-                "signals": {
-                    k: v for k, v in result.signals.items() if k != "method"
-                },
+                "signals": {k: v for k, v in result.signals.items() if k != "method"},
                 "agentic_score": result.agentic_score,
             }
 

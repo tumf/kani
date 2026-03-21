@@ -3,7 +3,7 @@
 # Env vars: use ${VAR_NAME} syntax for secrets.
 
 host: "0.0.0.0"
-port: 8420
+port: 18420
 
 default_provider: openrouter
 default_profile: auto

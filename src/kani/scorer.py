@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class Tier(str, Enum):
     SIMPLE = "SIMPLE"
     MEDIUM = "MEDIUM"
@@ -39,8 +40,10 @@ class Tier(str, Enum):
 # Configuration (fully overridable via Pydantic model)
 # ---------------------------------------------------------------------------
 
+
 class KeywordDimensionConfig(BaseModel):
     """Config for a single keyword-match dimension."""
+
     keywords: list[str]
     low_threshold: int = 1
     high_threshold: int = 3
@@ -55,150 +58,319 @@ class ScoringConfig(BaseModel):
     # -- Keyword dimensions ------------------------------------------------
     code_presence: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "function", "class", "import", "def", "SELECT", "async", "await",
-            "const", "let", "var", "return", "```",
+            "function",
+            "class",
+            "import",
+            "def",
+            "SELECT",
+            "async",
+            "await",
+            "const",
+            "let",
+            "var",
+            "return",
+            "```",
             # JP
-            "関数", "クラス", "インポート", "非同期", "定数", "変数",
+            "関数",
+            "クラス",
+            "インポート",
+            "非同期",
+            "定数",
+            "変数",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     reasoning_markers: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "prove", "theorem", "derive", "step by step", "chain of thought",
-            "formally", "mathematical", "proof", "logically",
+            "prove",
+            "theorem",
+            "derive",
+            "step by step",
+            "chain of thought",
+            "formally",
+            "mathematical",
+            "proof",
+            "logically",
             # JP
-            "証明", "定理", "導出", "ステップバイステップ", "論理的",
+            "証明",
+            "定理",
+            "導出",
+            "ステップバイステップ",
+            "論理的",
         ],
-        low_threshold=1, high_threshold=2,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=2,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     technical_terms: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "algorithm", "optimize", "architecture", "distributed",
-            "kubernetes", "microservice", "database", "infrastructure",
+            "algorithm",
+            "optimize",
+            "architecture",
+            "distributed",
+            "kubernetes",
+            "microservice",
+            "database",
+            "infrastructure",
             # JP
-            "アルゴリズム", "最適化", "アーキテクチャ", "分散",
-            "マイクロサービス", "データベース",
+            "アルゴリズム",
+            "最適化",
+            "アーキテクチャ",
+            "分散",
+            "マイクロサービス",
+            "データベース",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     creative_markers: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "story", "poem", "compose", "brainstorm", "creative", "imagine",
+            "story",
+            "poem",
+            "compose",
+            "brainstorm",
+            "creative",
+            "imagine",
             "write a",
             # JP
-            "物語", "詩", "作曲", "ブレインストーム", "創造的", "想像",
+            "物語",
+            "詩",
+            "作曲",
+            "ブレインストーム",
+            "創造的",
+            "想像",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     simple_indicators: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "what is", "define", "translate", "hello", "yes or no",
-            "capital of", "how old", "who is", "when was",
+            "what is",
+            "define",
+            "translate",
+            "hello",
+            "yes or no",
+            "capital of",
+            "how old",
+            "who is",
+            "when was",
             # JP
-            "とは", "定義", "翻訳", "こんにちは", "はいかいいえ", "首都", "誰",
+            "とは",
+            "定義",
+            "翻訳",
+            "こんにちは",
+            "はいかいいえ",
+            "首都",
+            "誰",
         ],
-        low_threshold=1, high_threshold=2,
-        none_score=0.0, low_score=-0.5, high_score=-1.0,
+        low_threshold=1,
+        high_threshold=2,
+        none_score=0.0,
+        low_score=-0.5,
+        high_score=-1.0,
     )
 
     imperative_verbs: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "build", "create", "implement", "design", "develop", "construct",
-            "generate", "deploy", "configure", "set up",
+            "build",
+            "create",
+            "implement",
+            "design",
+            "develop",
+            "construct",
+            "generate",
+            "deploy",
+            "configure",
+            "set up",
             # JP
-            "構築", "作成", "実装", "設計", "開発", "生成", "デプロイ", "設定",
+            "構築",
+            "作成",
+            "実装",
+            "設計",
+            "開発",
+            "生成",
+            "デプロイ",
+            "設定",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     constraint_count: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "must", "should", "ensure", "require", "constraint", "limit",
-            "boundary", "within",
+            "must",
+            "should",
+            "ensure",
+            "require",
+            "constraint",
+            "limit",
+            "boundary",
+            "within",
             # JP
-            "必須", "すべき", "確保", "要求", "制約", "制限", "境界", "以内",
+            "必須",
+            "すべき",
+            "確保",
+            "要求",
+            "制約",
+            "制限",
+            "境界",
+            "以内",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     output_format: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "json", "csv", "table", "markdown", "yaml", "xml",
-            "format as", "output as",
+            "json",
+            "csv",
+            "table",
+            "markdown",
+            "yaml",
+            "xml",
+            "format as",
+            "output as",
         ],
-        low_threshold=1, high_threshold=2,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=2,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     reference_complexity: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "according to", "based on", "reference", "citing",
-            "as mentioned", "per the",
+            "according to",
+            "based on",
+            "reference",
+            "citing",
+            "as mentioned",
+            "per the",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     negation_complexity: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "not", "don't", "without", "except", "exclude", "never", "nor",
+            "not",
+            "don't",
+            "without",
+            "except",
+            "exclude",
+            "never",
+            "nor",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
     domain_specificity: KeywordDimensionConfig = KeywordDimensionConfig(
         keywords=[
-            "medical", "legal", "financial", "scientific", "academic",
-            "clinical", "regulatory", "compliance",
+            "medical",
+            "legal",
+            "financial",
+            "scientific",
+            "academic",
+            "clinical",
+            "regulatory",
+            "compliance",
         ],
-        low_threshold=1, high_threshold=3,
-        none_score=0.0, low_score=0.5, high_score=1.0,
+        low_threshold=1,
+        high_threshold=3,
+        none_score=0.0,
+        low_score=0.5,
+        high_score=1.0,
     )
 
-    agentic_keywords: list[str] = Field(default=[
-        "read file", "edit", "modify", "update", "execute", "run", "deploy",
-        "install", "step 1", "step 2", "fix", "debug", "check",
-        # JP
-        "ファイル読み込み", "編集", "修正", "更新", "実行", "デプロイ",
-        "インストール", "ステップ1", "ステップ2", "修正", "デバッグ", "確認",
-    ])
+    agentic_keywords: list[str] = Field(
+        default=[
+            "read file",
+            "edit",
+            "modify",
+            "update",
+            "execute",
+            "run",
+            "deploy",
+            "install",
+            "step 1",
+            "step 2",
+            "fix",
+            "debug",
+            "check",
+            # JP
+            "ファイル読み込み",
+            "編集",
+            "修正",
+            "更新",
+            "実行",
+            "デプロイ",
+            "インストール",
+            "ステップ1",
+            "ステップ2",
+            "修正",
+            "デバッグ",
+            "確認",
+        ]
+    )
 
     # -- Multi-step regex patterns -----------------------------------------
-    multi_step_patterns: list[str] = Field(default=[
-        r"first.*then",
-        r"step \d",
-        r"\d\.\s",
-    ])
+    multi_step_patterns: list[str] = Field(
+        default=[
+            r"first.*then",
+            r"step \d",
+            r"\d\.\s",
+        ]
+    )
 
     # -- Dimension weights -------------------------------------------------
-    weights: dict[str, float] = Field(default={
-        "tokenCount": 0.08,
-        "codePresence": 0.15,
-        "reasoningMarkers": 0.18,
-        "technicalTerms": 0.10,
-        "creativeMarkers": 0.05,
-        "simpleIndicators": 0.02,
-        "multiStepPatterns": 0.12,
-        "questionComplexity": 0.05,
-        "imperativeVerbs": 0.03,
-        "constraintCount": 0.04,
-        "outputFormat": 0.03,
-        "referenceComplexity": 0.02,
-        "negationComplexity": 0.01,
-        "domainSpecificity": 0.02,
-        "agenticTask": 0.04,
-    })
+    weights: dict[str, float] = Field(
+        default={
+            "tokenCount": 0.08,
+            "codePresence": 0.15,
+            "reasoningMarkers": 0.18,
+            "technicalTerms": 0.10,
+            "creativeMarkers": 0.05,
+            "simpleIndicators": 0.02,
+            "multiStepPatterns": 0.12,
+            "questionComplexity": 0.05,
+            "imperativeVerbs": 0.03,
+            "constraintCount": 0.04,
+            "outputFormat": 0.03,
+            "referenceComplexity": 0.02,
+            "negationComplexity": 0.01,
+            "domainSpecificity": 0.02,
+            "agenticTask": 0.04,
+        }
+    )
 
     # -- Tier boundaries ---------------------------------------------------
     simple_medium_boundary: float = 0.0
@@ -218,9 +390,11 @@ class ScoringConfig(BaseModel):
 # Result dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class DimensionResult:
     """Score for a single dimension."""
+
     name: str
     raw_score: float
     weight: float
@@ -231,6 +405,7 @@ class DimensionResult:
 @dataclass
 class ClassificationResult:
     """Full classification output."""
+
     score: float
     tier: Tier
     confidence: float
@@ -243,6 +418,7 @@ class ClassificationResult:
 # Scorer
 # ---------------------------------------------------------------------------
 
+
 class EmbeddingClassifier:
     """Embedding-based tier classifier using a pre-trained sklearn model."""
 
@@ -254,7 +430,9 @@ class EmbeddingClassifier:
             data = pickle.load(f)
         self.classifier = data["classifier"]
         self.label_encoder = data["label_encoder"]
-        self.embedding_model: str = data.get("embedding_model", "text-embedding-3-small")
+        self.embedding_model: str = data.get(
+            "embedding_model", "text-embedding-3-small"
+        )
         self._client: Any | None = None
 
     @classmethod
@@ -282,11 +460,16 @@ class EmbeddingClassifier:
         if self._client is not None:
             return self._client
         from openai import OpenAI
+
         # Prefer OPENAI_API_KEY, fall back to OPENROUTER_API_KEY
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get(
+            "OPENROUTER_API_KEY"
+        )
         base_url = None
         model = self.embedding_model
-        if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
+        if not os.environ.get("OPENAI_API_KEY") and os.environ.get(
+            "OPENROUTER_API_KEY"
+        ):
             base_url = "https://openrouter.ai/api/v1"
             # OpenRouter uses provider-prefixed model names
             if not model.startswith("openai/"):
@@ -304,6 +487,7 @@ class EmbeddingClassifier:
             (tier, confidence) tuple.
         """
         import numpy as np
+
         client = self._get_client()
         resp = client.embeddings.create(input=[text], model=self.embedding_model)
         embedding = np.array([resp.data[0].embedding], dtype=np.float32)
@@ -344,9 +528,11 @@ class LLMClassifier:
                 "KANI_LLM_CLASSIFIER_BASE_URL", "https://openrouter.ai/api/v1"
             )
         ).rstrip("/")
-        self.api_key = api_key or os.environ.get(
-            "KANI_LLM_CLASSIFIER_API_KEY"
-        ) or os.environ.get("OPENROUTER_API_KEY", "")
+        self.api_key = (
+            api_key
+            or os.environ.get("KANI_LLM_CLASSIFIER_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
 
     def classify(self, text: str) -> tuple[Tier, float] | None:
         """Call the LLM to classify *text*.
@@ -443,12 +629,17 @@ class Scorer:
 
     @staticmethod
     def _keyword_score_from_config(
-        text: str, cfg: KeywordDimensionConfig,
+        text: str,
+        cfg: KeywordDimensionConfig,
     ) -> tuple[float, int]:
         return Scorer._keyword_score(
-            text, cfg.keywords,
-            cfg.low_threshold, cfg.high_threshold,
-            cfg.none_score, cfg.low_score, cfg.high_score,
+            text,
+            cfg.keywords,
+            cfg.low_threshold,
+            cfg.high_threshold,
+            cfg.none_score,
+            cfg.low_score,
+            cfg.high_score,
         )
 
     def _estimate_tokens(self, text: str) -> int:
@@ -472,7 +663,10 @@ class Scorer:
         return DimensionResult("tokenCount", raw, w, raw * w, match_count=tokens)
 
     def _score_keyword_dim(
-        self, text: str, name: str, cfg: KeywordDimensionConfig,
+        self,
+        text: str,
+        name: str,
+        cfg: KeywordDimensionConfig,
     ) -> DimensionResult:
         raw, count = self._keyword_score_from_config(text, cfg)
         w = self.config.weights[name]
@@ -485,7 +679,9 @@ class Scorer:
         )
         raw = 0.5 if hit else 0.0
         w = self.config.weights["multiStepPatterns"]
-        return DimensionResult("multiStepPatterns", raw, w, raw * w, match_count=int(hit))
+        return DimensionResult(
+            "multiStepPatterns", raw, w, raw * w, match_count=int(hit)
+        )
 
     def _score_question_complexity(self, text: str) -> DimensionResult:
         count = text.count("?")
@@ -524,7 +720,8 @@ class Scorer:
             if confidence < self._embedding_min_confidence:
                 log.debug(
                     "Embedding confidence %.2f < threshold %.2f, falling back to rules",
-                    confidence, self._embedding_min_confidence,
+                    confidence,
+                    self._embedding_min_confidence,
                 )
                 return None
             return ClassificationResult(
@@ -552,6 +749,7 @@ class Scorer:
 
         if self._enable_routing_log:
             from kani.logger import RoutingLogger
+
             RoutingLogger.log(text, result)
 
         return result
@@ -568,7 +766,10 @@ class Scorer:
         rules_result.signals["method"] = {"raw": "rules", "matches": 0}
 
         # --- 3. LLM escalation when confidence is low ---
-        if rules_result.confidence < self.config.min_confidence and self._use_llm_classifier:
+        if (
+            rules_result.confidence < self.config.min_confidence
+            and self._use_llm_classifier
+        ):
             llm_result = self._llm_classifier.classify(text)
             if llm_result is not None:
                 tier, confidence = llm_result
@@ -598,8 +799,12 @@ class Scorer:
             self._score_keyword_dim(text, "imperativeVerbs", cfg.imperative_verbs),
             self._score_keyword_dim(text, "constraintCount", cfg.constraint_count),
             self._score_keyword_dim(text, "outputFormat", cfg.output_format),
-            self._score_keyword_dim(text, "referenceComplexity", cfg.reference_complexity),
-            self._score_keyword_dim(text, "negationComplexity", cfg.negation_complexity),
+            self._score_keyword_dim(
+                text, "referenceComplexity", cfg.reference_complexity
+            ),
+            self._score_keyword_dim(
+                text, "negationComplexity", cfg.negation_complexity
+            ),
             self._score_keyword_dim(text, "domainSpecificity", cfg.domain_specificity),
             self._score_agentic(text),
         ]
@@ -616,8 +821,7 @@ class Scorer:
 
         # Build signals dict
         signals: dict[str, Any] = {
-            d.name: {"raw": d.raw_score, "matches": d.match_count}
-            for d in dims
+            d.name: {"raw": d.raw_score, "matches": d.match_count} for d in dims
         }
 
         # -- Tier determination --------------------------------------------

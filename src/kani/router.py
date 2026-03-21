@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from kani.config import KaniConfig, ProviderConfig, resolve_env
+from kani.config import KaniConfig, resolve_env
 
 log = logging.getLogger(__name__)
 
@@ -16,12 +16,14 @@ log = logging.getLogger(__name__)
 # Routing result
 # ---------------------------------------------------------------------------
 
+
 class RoutingDecision(BaseModel):
     """The outcome of a routing decision."""
+
     model: str
     provider: str
     base_url: str
-    api_key: str = ''
+    api_key: str = ""
     tier: str
     score: float
     confidence: float
@@ -34,10 +36,10 @@ class RoutingDecision(BaseModel):
 # ---------------------------------------------------------------------------
 
 # Default tier when the scorer can't decide
-_DEFAULT_TIER = 'MEDIUM'
+_DEFAULT_TIER = "MEDIUM"
 
 # Ordered tiers from simplest to most complex
-_TIER_ORDER = ['SIMPLE', 'MEDIUM', 'COMPLEX', 'REASONING']
+_TIER_ORDER = ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
 
 
 class Router:
@@ -73,7 +75,11 @@ class Router:
 
         profile_cfg = self.config.profiles.get(profile)
         if profile_cfg is None:
-            log.warning("Profile %r not found, falling back to %r", profile, self.config.default_profile)
+            log.warning(
+                "Profile %r not found, falling back to %r",
+                profile,
+                self.config.default_profile,
+            )
             profile = self.config.default_profile
             profile_cfg = self.config.profiles.get(profile)
 
@@ -90,15 +96,15 @@ class Router:
         # --- Run scorer ---
         classification = self._classify(prompt, system_prompt, messages)
 
-        tier: str = classification.get('tier') or _DEFAULT_TIER
-        score: float = classification.get('score', 0.5)
-        confidence: float = classification.get('confidence', 0.5)
-        signals: list[str] = classification.get('signals', [])
-        agentic_score: float = classification.get('agentic_score', 0.0)
+        tier: str = classification.get("tier") or _DEFAULT_TIER
+        score: float = classification.get("score", 0.5)
+        confidence: float = classification.get("confidence", 0.5)
+        signals: list[str] = classification.get("signals", [])
+        agentic_score: float = classification.get("agentic_score", 0.0)
 
         # --- Override tier for agentic profile if agentic_score is high ---
-        if profile == 'agentic' and agentic_score > 0.6 and tier == 'SIMPLE':
-            tier = 'MEDIUM'
+        if profile == "agentic" and agentic_score > 0.6 and tier == "SIMPLE":
+            tier = "MEDIUM"
 
         # --- Look up model in profile tier config ---
         tier_cfg = profile_cfg.tiers.get(tier)
@@ -112,7 +118,7 @@ class Router:
 
         # --- Resolve provider ---
         provider_name = tier_cfg.provider
-        if provider_name == 'default':
+        if provider_name == "default":
             provider_name = self.config.default_provider
 
         provider_cfg = self.config.providers.get(provider_name)
@@ -146,37 +152,39 @@ class Router:
         if profile:
             return profile
 
-        if model and model.startswith('kani/'):
-            return model.removeprefix('kani/')
+        if model and model.startswith("kani/"):
+            return model.removeprefix("kani/")
 
         return self.config.default_profile
 
     @staticmethod
     def _extract_prompts(messages: list[dict[str, Any]]) -> tuple[str, str]:
         """Pull the last user message and system prompt from a message list."""
-        prompt = ''
-        system_prompt = ''
+        prompt = ""
+        system_prompt = ""
 
         for msg in messages:
-            role = msg.get('role', '')
-            content = msg.get('content', '')
+            role = msg.get("role", "")
+            content = msg.get("content", "")
             if isinstance(content, list):
                 # Handle multimodal content blocks – extract text parts
-                content = ' '.join(
-                    part.get('text', '') for part in content
-                    if isinstance(part, dict) and part.get('type') == 'text'
+                content = " ".join(
+                    part.get("text", "")
+                    for part in content
+                    if isinstance(part, dict) and part.get("type") == "text"
                 )
-            if role == 'system':
+            if role == "system":
                 system_prompt = str(content)
 
         # Last user message
         for msg in reversed(messages):
-            if msg.get('role') == 'user':
-                content = msg.get('content', '')
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
                 if isinstance(content, list):
-                    content = ' '.join(
-                        part.get('text', '') for part in content
-                        if isinstance(part, dict) and part.get('type') == 'text'
+                    content = " ".join(
+                        part.get("text", "")
+                        for part in content
+                        if isinstance(part, dict) and part.get("type") == "text"
                     )
                 prompt = str(content)
                 break
@@ -195,9 +203,7 @@ class Router:
         Falls back gracefully if the scorer module isn't available yet.
         """
         # Rough token estimate (4 chars per token)
-        estimated_tokens = sum(
-            len(str(m.get('content', ''))) for m in messages
-        ) // 4
+        estimated_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
 
         try:
             from kani.scorer import Scorer
@@ -206,21 +212,22 @@ class Router:
             result = scorer.classify(prompt)
             tier_val = result.tier
             # Tier may be an enum or string
-            if hasattr(tier_val, 'value'):
+            if hasattr(tier_val, "value"):
                 tier_val = tier_val.value
             # signals may be a dict or list — only include non-zero dimensions
             signals = result.signals
             if isinstance(signals, dict):
                 signals = [
-                    k for k, v in signals.items()
-                    if v and isinstance(v, dict) and v.get('raw', 0) != 0
+                    k
+                    for k, v in signals.items()
+                    if v and isinstance(v, dict) and v.get("raw", 0) != 0
                 ]
             return {
-                'score': result.score,
-                'tier': str(tier_val) if tier_val else None,
-                'confidence': result.confidence,
-                'signals': signals,
-                'agentic_score': result.agentic_score,
+                "score": result.score,
+                "tier": str(tier_val) if tier_val else None,
+                "confidence": result.confidence,
+                "signals": signals,
+                "agentic_score": result.agentic_score,
             }
         except ImportError:
             log.warning("Scorer module not available, using heuristic fallback")
@@ -242,58 +249,83 @@ class Router:
 
         # Length signals
         if length < 60:
-            signals.append('short_prompt')
+            signals.append("short_prompt")
         elif length > 800:
-            signals.append('long_prompt')
+            signals.append("long_prompt")
             score += 0.2
 
         # Code signals
-        code_keywords = ['```', 'def ', 'class ', 'import ', 'function ', 'const ', 'async ']
+        code_keywords = [
+            "```",
+            "def ",
+            "class ",
+            "import ",
+            "function ",
+            "const ",
+            "async ",
+        ]
         if any(kw in prompt for kw in code_keywords):
-            signals.append('code_content')
+            signals.append("code_content")
             score += 0.15
 
         # Reasoning signals
-        reasoning_words = ['explain', 'analyze', 'compare', 'evaluate', 'prove', 'derive', 'why']
+        reasoning_words = [
+            "explain",
+            "analyze",
+            "compare",
+            "evaluate",
+            "prove",
+            "derive",
+            "why",
+        ]
         if any(w in prompt_lower for w in reasoning_words):
-            signals.append('reasoning_request')
+            signals.append("reasoning_request")
             score += 0.15
 
         # Agentic signals
-        agentic_words = ['search', 'browse', 'execute', 'run', 'call', 'fetch', 'tool', 'action']
+        agentic_words = [
+            "search",
+            "browse",
+            "execute",
+            "run",
+            "call",
+            "fetch",
+            "tool",
+            "action",
+        ]
         agentic_hits = sum(1 for w in agentic_words if w in prompt_lower)
         if agentic_hits > 0:
-            signals.append('agentic_language')
+            signals.append("agentic_language")
             agentic_score = min(1.0, agentic_hits * 0.25)
 
         # System prompt complexity
         if len(system_prompt) > 500:
-            signals.append('complex_system_prompt')
+            signals.append("complex_system_prompt")
             score += 0.1
 
         # Token volume
         if estimated_tokens > 2000:
-            signals.append('high_token_count')
+            signals.append("high_token_count")
             score += 0.1
 
         score = min(1.0, score)
 
         # Map score to tier
         if score < 0.3:
-            tier = 'SIMPLE'
+            tier = "SIMPLE"
         elif score < 0.55:
-            tier = 'MEDIUM'
+            tier = "MEDIUM"
         elif score < 0.8:
-            tier = 'COMPLEX'
+            tier = "COMPLEX"
         else:
-            tier = 'REASONING'
+            tier = "REASONING"
 
         return {
-            'score': round(score, 3),
-            'tier': tier,
-            'confidence': 0.4,  # heuristic = low confidence
-            'signals': signals,
-            'agentic_score': round(agentic_score, 3),
+            "score": round(score, 3),
+            "tier": tier,
+            "confidence": 0.4,  # heuristic = low confidence
+            "signals": signals,
+            "agentic_score": round(agentic_score, 3),
         }
 
     @staticmethod

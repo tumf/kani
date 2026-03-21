@@ -1,0 +1,23 @@
+services:
+  kani:
+    build: .
+    container_name: kani
+    restart: unless-stopped
+    ports:
+      - "18420:18420"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      # mount models/ if you have a trained tier_classifier.pkl
+      # - ./models:/app/models:ro
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Optional: embedding / LLM classifier overrides
+      # - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - KANI_LLM_CLASSIFIER_MODEL=google/gemini-2.5-flash-lite
+      # - KANI_LLM_CLASSIFIER_BASE_URL=https://openrouter.ai/api/v1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:18420/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

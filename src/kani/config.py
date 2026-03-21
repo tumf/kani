@@ -18,47 +18,55 @@ from pydantic import BaseModel, Field
 # Pydantic models
 # ---------------------------------------------------------------------------
 
+
 class ProviderConfig(BaseModel):
     """A backend LLM provider (OpenRouter, Anthropic, local proxy, etc.)."""
+
     name: str  # e.g. 'openrouter', 'cliproxy', 'anthropic'
     base_url: str  # e.g. 'https://openrouter.ai/api/v1'
-    api_key: str = ''  # can reference env var with ${ENV_VAR}
+    api_key: str = ""  # can reference env var with ${ENV_VAR}
+    models: list[str] = Field(default_factory=list)  # optional model whitelist
 
 
 class TierModelConfig(BaseModel):
     """Model selection for a single complexity tier within a profile."""
+
     primary: str  # model ID e.g. 'google/gemini-2.5-flash'
     fallback: list[str] = Field(default_factory=list)  # fallback model IDs
-    provider: str = 'default'  # which provider to use ('default' -> default_provider)
+    provider: str = "default"  # which provider to use ('default' -> default_provider)
 
 
 class ProfileConfig(BaseModel):
     """A routing profile (auto, eco, premium, agentic)."""
+
     tiers: dict[str, TierModelConfig]  # SIMPLE, MEDIUM, COMPLEX, REASONING
 
 
 class KaniConfig(BaseModel):
     """Top-level Kani configuration."""
-    host: str = '0.0.0.0'
-    port: int = 8420
+
+    host: str = "0.0.0.0"
+    port: int = 18420
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
-    default_provider: str = 'openrouter'
+    default_provider: str = "openrouter"
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
-    default_profile: str = 'auto'
+    default_profile: str = "auto"
 
 
 # ---------------------------------------------------------------------------
 # Env-var resolution
 # ---------------------------------------------------------------------------
 
-_ENV_RE = re.compile(r'\$\{([^}]+)\}')
+_ENV_RE = re.compile(r"\$\{([^}]+)\}")
 
 
 def resolve_env(value: str) -> str:
     """Replace ${VAR} placeholders with environment variable values."""
+
     def _replace(m: re.Match) -> str:
         var = m.group(1)
-        return os.environ.get(var, '')
+        return os.environ.get(var, "")
+
     return _ENV_RE.sub(_replace, value)
 
 
@@ -78,9 +86,9 @@ def resolve_env_recursive(obj: Any) -> Any:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONFIG_PATHS = [
-    Path('config.yaml'),
-    Path('config.yml'),
-    Path('/etc/kani/config.yaml'),
+    Path("config.yaml"),
+    Path("config.yml"),
+    Path("/etc/kani/config.yaml"),
 ]
 
 
@@ -91,7 +99,7 @@ def _find_config_file(explicit_path: str | Path | None = None) -> Path | None:
         return p if p.is_file() else None
 
     # Check env var
-    env_path = os.environ.get('KANI_CONFIG')
+    env_path = os.environ.get("KANI_CONFIG")
     if env_path:
         p = Path(env_path).expanduser()
         if p.is_file():

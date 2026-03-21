@@ -20,7 +20,9 @@ from kani.router import Router, RoutingDecision
 logger = logging.getLogger("kani.proxy")
 logger.setLevel(logging.DEBUG)
 _handler = logging.StreamHandler(sys.stderr)
-_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+)
 logger.addHandler(_handler)
 
 # ── Global state ──────────────────────────────────────────────────────────────
@@ -48,6 +50,7 @@ def configure(config_path: str | None = None) -> None:
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _http
@@ -70,7 +73,10 @@ app = FastAPI(title="kani", version="0.1.0", lifespan=lifespan)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _openai_error(status: int, message: str, err_type: str = "invalid_request_error") -> JSONResponse:
+
+def _openai_error(
+    status: int, message: str, err_type: str = "invalid_request_error"
+) -> JSONResponse:
     return JSONResponse(
         status_code=status,
         content={
@@ -171,10 +177,13 @@ async def _proxy_upstream(
     except httpx.TimeoutException:
         return _openai_error(504, "Upstream provider timed out", "timeout_error")
     except httpx.HTTPError as exc:
-        return _openai_error(502, f"Upstream connection error: {exc!r}", "upstream_error")
+        return _openai_error(
+            502, f"Upstream connection error: {exc!r}", "upstream_error"
+        )
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
@@ -215,8 +224,11 @@ async def chat_completions(request: Request):
 
     else:
         # ── Pass-through to default provider ──────────────────────────────
+        assert _config is not None
         base_url, api_key, _ = _get_default_provider_info()
-        logger.info("PASSTHROUGH model=%s provider=%s", model_field, _config.default_provider)
+        logger.info(
+            "PASSTHROUGH model=%s provider=%s", model_field, _config.default_provider
+        )
         return await _proxy_upstream(base_url, api_key, body, decision=None)
 
 

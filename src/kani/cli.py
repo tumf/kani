@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 
 import click
 
@@ -30,7 +29,6 @@ def serve(config_path: str | None, host: str | None, port: int | None):
     """Start the kani proxy server."""
     import uvicorn
 
-    from kani.config import load_config
     from kani.proxy import app, configure
 
     path = _resolve_config(config_path)
@@ -50,7 +48,9 @@ def serve(config_path: str | None, host: str | None, port: int | None):
 @main.command("route")
 @click.argument("prompt")
 @click.option("--config", "config_path", default=None, help="Path to config.yaml")
-@click.option("--profile", default=None, help="Routing profile (e.g. auto, eco, premium)")
+@click.option(
+    "--profile", default=None, help="Routing profile (e.g. auto, eco, premium)"
+)
 def route_cmd(prompt: str, config_path: str | None, profile: str | None):
     """Classify a prompt and show the routing decision."""
     from kani.config import load_config

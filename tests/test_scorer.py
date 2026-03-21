@@ -9,6 +9,7 @@ from kani.scorer import ClassificationResult, Scorer, ScoringConfig, Tier
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _classify(text: str, config: ScoringConfig | None = None) -> ClassificationResult:
     scorer = Scorer(config)
     return scorer.classify(text)
@@ -17,6 +18,7 @@ def _classify(text: str, config: ScoringConfig | None = None) -> ClassificationR
 # ---------------------------------------------------------------------------
 # Simple prompts -> SIMPLE tier
 # ---------------------------------------------------------------------------
+
 
 class TestSimpleTier:
     def test_hello(self) -> None:
@@ -47,6 +49,7 @@ class TestSimpleTier:
 # ---------------------------------------------------------------------------
 # Code prompts -> MEDIUM or COMPLEX
 # ---------------------------------------------------------------------------
+
 
 class TestCodePrompts:
     def test_simple_code_question(self) -> None:
@@ -91,6 +94,7 @@ class TestCodePrompts:
 # Reasoning prompts -> REASONING tier
 # ---------------------------------------------------------------------------
 
+
 class TestReasoningPrompts:
     def test_prove_theorem(self) -> None:
         result = _classify(
@@ -114,14 +118,14 @@ class TestReasoningPrompts:
         assert result.tier == Tier.REASONING
 
     def test_japanese_reasoning(self) -> None:
-        result = _classify("この定理を証明してください。ステップバイステップで導出してください。")
+        result = _classify(
+            "この定理を証明してください。ステップバイステップで導出してください。"
+        )
         assert result.tier == Tier.REASONING
 
     def test_reasoning_override_confidence(self) -> None:
         """Reasoning override should produce confidence >= 0.85."""
-        result = _classify(
-            "Prove the theorem formally using mathematical induction."
-        )
+        result = _classify("Prove the theorem formally using mathematical induction.")
         assert result.tier == Tier.REASONING
         assert result.confidence >= 0.85
 
@@ -129,6 +133,7 @@ class TestReasoningPrompts:
 # ---------------------------------------------------------------------------
 # Agentic prompts -> agentic_score > 0
 # ---------------------------------------------------------------------------
+
 
 class TestAgenticPrompts:
     def test_agentic_basic(self) -> None:
@@ -151,13 +156,16 @@ class TestAgenticPrompts:
         assert result.agentic_score == 0.0
 
     def test_japanese_agentic(self) -> None:
-        result = _classify("ファイル読み込みして編集してください。修正してデプロイしてください。")
+        result = _classify(
+            "ファイル読み込みして編集してください。修正してデプロイしてください。"
+        )
         assert result.agentic_score > 0
 
 
 # ---------------------------------------------------------------------------
 # Configuration override
 # ---------------------------------------------------------------------------
+
 
 class TestConfigOverride:
     def test_custom_weights(self) -> None:
@@ -203,6 +211,7 @@ class TestConfigOverride:
 # Dimension details
 # ---------------------------------------------------------------------------
 
+
 class TestDimensions:
     def test_dimensions_returned(self) -> None:
         result = _classify("Hello world")
@@ -231,6 +240,7 @@ class TestDimensions:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     def test_empty_string(self) -> None:

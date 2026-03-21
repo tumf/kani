@@ -233,7 +233,9 @@ class TestLLMClassifierUnit:
 
         # Check that the prompt in the request contains only 500 chars of the text
         call_args = mock_post.call_args
-        messages = call_args.kwargs.get("json", call_args[1].get("json", {}))["messages"]
+        messages = call_args.kwargs.get("json", call_args[1].get("json", {}))[
+            "messages"
+        ]
         user_content = messages[0]["content"]
         assert "x" * 500 in user_content
         assert "x" * 501 not in user_content

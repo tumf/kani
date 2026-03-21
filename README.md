@@ -46,50 +46,93 @@ Multilingual — English and Japanese keywords included.
 
 ## Quick start
 
-```bash
-# Install
-cd ~/services/kani
-uv sync
+### Try without installing (uvx)
 
-# Classify a prompt (no server needed)
-uv run kani route "hello world"
-uv run kani route "prove the Riemann hypothesis step by step"
+```bash
+# Classify a prompt
+uvx --from git+https://github.com/tumf/kani kani route "hello world"
 
 # Start the proxy server
+uvx --from git+https://github.com/tumf/kani kani serve
+```
+
+### Local install
+
+```bash
+git clone https://github.com/tumf/kani.git && cd kani
+uv sync
+
+uv run kani route "hello world"
 uv run kani serve
 ```
 
-## Usage with any OpenAI client
+## Usage — drop-in replacement for OpenAI / OpenRouter
 
-Point your client at kani and use `kani/<profile>` as the model name:
+kani speaks the OpenAI API. Change `base_url` and `model`, everything else stays the same.
+
+### Before (direct OpenAI)
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:8420/v1",
-    api_key="anything",  # kani handles auth to upstream
+    api_key="sk-...",                          # OpenAI key
 )
 
-# Auto-routed — kani picks the best model
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "explain quicksort"}],
+)
+```
+
+### Before (OpenRouter)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",  # OpenRouter
+    api_key="sk-or-...",                       # OpenRouter key
+)
+
+response = client.chat.completions.create(
+    model="anthropic/claude-sonnet-4",
+    messages=[{"role": "user", "content": "explain quicksort"}],
+)
+```
+
+### After (kani) — auto-routed
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:18420/v1",      # ← kani
+    api_key="anything",                        # kani handles upstream auth
+)
+
+# kani picks the best model based on prompt complexity
 response = client.chat.completions.create(
     model="kani/auto",
     messages=[{"role": "user", "content": "explain quicksort"}],
 )
 
-# Or use a specific profile
+# Or pin a routing profile
 response = client.chat.completions.create(
-    model="kani/premium",  # best quality
+    model="kani/premium",  # always use best-quality models
     messages=[{"role": "user", "content": "prove P != NP"}],
 )
 ```
 
+### curl
+
 ```bash
-# curl
-curl http://localhost:8420/v1/chat/completions \
+curl http://localhost:18420/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "kani/auto", "messages": [{"role": "user", "content": "hello"}]}'
 ```
+
+> **That's it.** Any tool or library that supports the OpenAI API works with kani — LangChain, LlamaIndex, Cursor, Continue, etc. Just point `base_url` at kani.
 
 ## Routing profiles
 
@@ -117,7 +160,7 @@ Routed responses include extra headers: `X-Kani-Tier`, `X-Kani-Model`, `X-Kani-S
 
 ```yaml
 host: "0.0.0.0"
-port: 8420
+port: 18420
 default_provider: openrouter
 default_profile: auto
 
@@ -178,7 +221,7 @@ Future: train an embedding classifier from these logs to replace the heuristic r
 ## CLI
 
 ```bash
-kani serve [--config path] [--host 0.0.0.0] [--port 8420]
+kani serve [--config path] [--host 0.0.0.0] [--port 18420]
 kani route "your prompt here" [--config path]
 kani config [--config path]
 ```
