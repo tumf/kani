@@ -1,0 +1,1370 @@
+[
+  {
+    "prompt": "Write a script that automates database backups with rotation",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a serverless data lake architecture on AWS with schema evolution, data lineage tracking, and cost optimization",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "blockchainとは?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive Bayes' theorem from the axioms of probability and prove the posterior is a valid distribution",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Build an observability platform that correlates logs, metrics, and traces with automatic root cause analysis",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Create a REST API endpoint that handles file uploads with progress tracking",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Using formal logic, determine whether the following argument is valid and construct a truth table proof",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "YAMLとは?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a WebSocket chat server in Python with rooms and user presence",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "はい",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "when was the internet invented?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "convert 3.14 kilograms to miles",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Python decorator that caches function results with TTL expiration",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a secure secrets management system with HSM integration, secret rotation, dynamic credentials, and audit logging",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "ok",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a backup verification tool that checks data integrity",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's the capital of Australia?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a custom garbage collector for a managed runtime with generational collection and concurrent marking",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Implement a simple state machine in Python for order processing",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's up",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what time is it in Tokyo?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "polymorphismの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a health check endpoint that verifies all downstream dependencies",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a serverless function that processes image uploads and generates thumbnails",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "does Nginx support streaming?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the KL divergence properties from first principles and prove its non-negativity using Jensen's inequality",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "マイクロサービス間の非同期通信基盤を設計。要件: exactly-once配信、順序保証、デッドレターキュー、スケーラビリティ",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Analyze the computational complexity of matrix multiplication and prove the Strassen bound of O(n^2.807)",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Prove that the set of all computable functions is countably infinite while the set of all functions is uncountable",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Design a high-availability message queue with persistent storage, consumer groups, and exactly-once delivery across failures",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Implement a distributed rate limiter that works across multiple data centers with configurable algorithms and burst handling",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Formally verify the correctness of the AKS primality testing algorithm step by step",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "what's the capital of Canada?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a gRPC protocol handler with bidirectional streaming, backpressure, flow control, and automatic retry with hedging",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Derive the Cramér-Rao lower bound and prove that maximum likelihood estimators are asymptotically efficient",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Create a custom Prometheus exporter for application-specific metrics",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "summarize this in one sentence",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "how do you say 'algorithm' in Korean?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a circuit breaker pattern for microservice communication",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what is REST API?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Dockerの設定方法を教えて",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "how do you say 'database' in Japanese?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a CLI tool that manages environment variables across services",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a pub/sub system using Redis streams",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a custom load balancer with consistent hashing, health checking, connection draining, and weighted routing",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "give me a one-liner for listing files",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what's the capital of India?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a Docker Compose setup for a full-stack app with Postgres and Redis",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove that the VC dimension of linear classifiers in R^d is d+1",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Create a real-time ML inference pipeline using Kafka, Flink, and TensorFlow Serving with model versioning and A/B testing",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "ラプラス変換の逆変換公式をステップバイステップで導出し、その正当性を証明せよ",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "How do I configure log rotation and structured logging in a Go application?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a chaos engineering platform with automated failure injection, steady state hypothesis testing, and blast radius containment",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "了解",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Pythonでメール送信するクラスを書いて。SMTPとSESの両方に対応",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Using chain of thought reasoning, solve: what is the minimum number of moves to solve the Tower of Hanoi with n disks, and prove it",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Design a CQRS + Event Sourcing architecture for a banking system with saga orchestration and compensating transactions",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Design an edge computing platform for IoT with local inference, bidirectional sync, and bandwidth-optimized model deployment",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "おはよう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Python function to detect and handle circular references in JSON",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a migration script to move data from MongoDB to PostgreSQL",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "who wrote Harry Potter?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "REST APIとは?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what time is it in London?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Explain the difference between async/await and threads in Python",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "How do I configure mutual TLS between microservices?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write integration tests for a payment processing workflow",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a simple service mesh sidecar for logging and metrics",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "where is the Great Wall?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "How do I set up hot module replacement in a Webpack config?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what time is it in Berlin?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "is Redis a database?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "can Redis do handle async?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the backpropagation algorithm from first principles step by step, starting from the chain rule",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Write a Python class that wraps the Stripe API for payment processing",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "hi there",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Guido van Rossumって誰?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a browser extension that modifies page content based on user rules",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's the capital of South Korea?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "おはよう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "hi there",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "こんにちは",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a reusable modal component system in Vue.js",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a form validation library with custom validators and error messages",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "こんにちは",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "who is Tim Berners-Lee?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "分散システムのConsensusプロトコル（Raft）を実装し、リーダー選挙、ログ複製、メンバーシップ変更を含めて",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Create a distributed caching layer with eventual consistency, anti-entropy protocols, and least-recently-used eviction with frequency boosting",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write a data anonymization pipeline for GDPR compliance",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's up",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Mathematically prove the optimality of Huffman coding for prefix-free codes",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "yes",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "KubernetesのPodが再起動を繰り返す原因を調べる方法",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a Python function that parses CSV files and returns a list of dictionaries",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "How do I configure ESLint and Prettier for a TypeScript project?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a custom B-tree index optimized for SSD storage with write-ahead logging and crash recovery",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Implement SSO with SAML in a Spring Boot application",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a custom query optimizer for a columnar database with cost-based optimization and parallel query execution",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "hello",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "where is MIT?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "list the planets in our solar system",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "tell me a joke",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Step by step, prove the pumping lemma for regular languages and use it to show {a^n b^n} is not regular",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "what is Docker?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "how old is Ada Lovelace?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a declarative infrastructure platform where users specify desired state and the system converges with drift detection",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "when was Linux released?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "APIのレート制限をRedisで実装する方法を教えて",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a simple A/B testing framework with statistical significance checks",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a monitoring dashboard for system metrics using Grafana and Prometheus",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's up",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a distributed tracing system from scratch with context propagation, sampling strategies, and anomaly detection",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Build a simple blog backend with CRUD operations in Go",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement end-to-end encryption for a healthcare messaging app with key rotation, forward secrecy, and HIPAA compliance",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "How do I implement pagination with cursor-based approach in GraphQL?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a blue-green deployment system for databases with schema versioning, data migration, and instant rollback",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "is Docker a protocol?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a GitHub Actions workflow that runs tests and deploys to staging",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a real-time collaborative editing platform that handles 100K concurrent users with operational transformation and conflict resolution",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write a Python decorator for automatic OpenTelemetry tracing",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove or disprove: every continuous function on a closed interval is uniformly continuous",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Design a database schema for an e-commerce platform",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a zero-downtime database migration system for a sharded PostgreSQL cluster with cross-shard foreign keys",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "when was Linux released?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Formally verify that red-black trees maintain O(log n) height after insertions and deletions",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Build a compliance automation platform that maps regulatory requirements to technical controls with continuous monitoring",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Implement a custom Raft consensus library in Rust with pre-vote, learner nodes, and joint consensus for membership changes",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "what's up",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "How do I implement a custom authentication backend in Django?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove that any deterministic finite automaton can be minimized to a unique minimal DFA (up to isomorphism)",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "give me a one-liner for listing files",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "how do you say 'database' in Japanese?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the Navier-Stokes equations starting from conservation of mass, momentum, and energy",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "hello",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Formally prove the correctness of the RSA cryptosystem using Euler's theorem and the Chinese Remainder Theorem",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "what's the weather like?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "when was Linux released?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a production-grade connection pool with health checking, circuit breaking, and adaptive sizing based on load",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Implement a real-time fraud detection system using stream processing with feature stores, model serving, and feedback loops",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "does Redis support type hints?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "good morning",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a bash script that monitors disk usage and sends alerts",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a Python function that generates PDF reports from data",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a comprehensive audit logging system with tamper-proof storage, efficient querying, and configurable retention policies",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "can Python do run on Windows?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "おはよう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what time is it in Berlin?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "hey",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what is blockchain?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Gitとは?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "tell me a joke",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what is 2+2?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "How do I implement file streaming in a FastAPI endpoint?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement OAuth2 login flow with Google provider in FastAPI",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "以下の定理をステップバイステップで証明して: すべての有限群は巡回群の直積に分解できる（アーベル群の場合）",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "define JWT",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a binary search tree in TypeScript with insert, delete, and search",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "GitHubのPRをレビューするためのチェックリストを作って",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "webhookの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a simple job scheduler with cron-like syntax in Python",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Formally prove the correctness of Dijkstra's algorithm using loop invariants and contradiction",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "is Docker a programming language?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create an Express.js middleware for request validation using Zod",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Derive the closed-form solution for linear regression using matrix calculus and prove it minimizes MSE",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "hey",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Python library for interacting with the GitHub API",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a React component that displays a sortable data table with pagination",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a data pipeline that reads from S3, transforms with pandas, and loads to Redshift",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a simple LRU cache from scratch in Python",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Derive the ELBO (Evidence Lower Bound) for variational inference and prove it is a lower bound on log-likelihood",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Write a Python script to parse and transform JSON logs into structured format",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "How do I handle authentication in Next.js with JWT tokens?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "how do you say 'computer' in Japanese?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what is the largest ocean?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Prove that gradient descent with momentum converges faster than vanilla gradient descent for quadratic objectives",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Create a changelog generator from conventional commits",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "where is MIT?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "can Docker do handle async?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "おはよう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Python script that generates infrastructure diagrams from Terraform files",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's the capital of Japan?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a data validation layer using Pydantic for incoming webhook payloads",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a data mesh architecture with domain-driven ownership, self-serve data infrastructure, and federated governance",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "name 3 fruits",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "does Docker support streaming?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what year did World War 2 end?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a CI pipeline that runs security scanning and dependency auditing",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a streaming ETL platform with schema registry, exactly-once processing, and automatic schema evolution handling",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write a script that generates API documentation from OpenAPI specs",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a middleware that logs request/response bodies with sensitive field masking",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a vector similarity search engine optimized for high-dimensional embeddings with approximate nearest neighbor and GPU acceleration",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "summarize this in one sentence",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a custom Django management command for data imports",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a custom eslint rule that enforces specific import ordering",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove the master theorem for divide-and-conquer recurrences using the recursion tree method",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "hey",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a rate limiter using Redis with sliding window algorithm",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a GraphQL resolver that handles nested queries with DataLoader",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "webhookの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "good morning",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Step by step, prove the CAP theorem and show that it's impossible to achieve all three properties simultaneously",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Prove the correctness of Paxos consensus protocol for single-decree consensus in asynchronous networks",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Implement a simple feature flag system with percentage-based rollouts",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "ReactでダークモードをContext APIで実装する方法",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Implement a simple task queue with retry logic in Python",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what is Docker?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what is blockchain?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "大規模リアルタイム分析基盤のアーキテクチャ設計。要件: 10TB/日のデータ取り込み、サブ秒クエリ、マルチテナント対応",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "いいえ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a SQL query to find the top 10 customers by total order value in the last 30 days",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a microservice architecture for a financial trading platform with sub-millisecond latency, audit trails, and regulatory compliance",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Create a responsive navigation component with dropdown menus in CSS/HTML",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Linus Torvaldsって誰?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Pythonでバッチ処理のリトライロジックを実装して",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a CLI tool that generates project scaffolding from templates",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove that the power set of any set has strictly greater cardinality using Cantor's diagonal argument",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Implement a message deduplication layer for event-driven systems",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a multi-tenant SaaS platform with row-level security, tenant isolation at the network level, and per-tenant resource quotas",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "can Redis do scale horizontally?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Help me debug this error: TypeError: Cannot read property 'map' of undefined",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a distributed job scheduler with priority queues, resource quotas, fair sharing, and gang scheduling",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "おはよう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Prove the convergence of the gradient descent algorithm for convex functions using Lipschitz continuity",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Create a custom hook in React for managing form state and validation",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Build a CI/CD platform that supports monorepo builds with dependency graph analysis, incremental testing, and resource scheduling",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write a Dockerfile for a Node.js application with multi-stage builds",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's the capital of Australia?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a distributed lock service with fencing tokens, lease-based locking, and automatic deadlock detection",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write a Python async task runner with dependency resolution",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "hello",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "ありがとう",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a multi-cloud deployment platform with infrastructure abstraction, cost optimization, and compliance controls",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "what's the weather like?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Prove the correctness of the Bellman-Ford algorithm for graphs with negative edge weights using induction",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "How do I set up a Kafka consumer group with exactly-once semantics?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a development proxy that mocks external API dependencies",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what color is grass?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "thanks",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Refactor this code to use the strategy pattern",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Design a full-text search engine with BM25 ranking, faceted search, fuzzy matching, and horizontal sharding with query routing",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "is Python a protocol?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Makefile for a Python project with test, lint, and build targets",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "middlewareの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "how many continents are there?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a GitHub bot that auto-labels issues based on content",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "How do I configure Nginx as a reverse proxy with SSL termination?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "hello",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement a custom container orchestrator for Kubernetes that handles GPU scheduling with topology-aware placement",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "how do you say 'server' in Spanish?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "CSVファイルを読み込んでグラフを描画するPythonスクリプトを書いて",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove that consistent hashing distributes keys uniformly in expectation and bound the variance",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "can JavaScript do scale horizontally?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Design an API gateway with adaptive rate limiting, circuit breaking, request coalescing, and OpenTelemetry integration",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Build a data catalog with automated schema discovery, lineage tracking, PII detection, and access control",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Write unit tests for a function that validates email addresses",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a database query builder with type-safe interface in TypeScript",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what is the speed of light?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a simple URL shortener service with analytics",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what time is it in London?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a Python async web scraper that respects rate limits",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "does Nginx support streaming?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Formally prove that merge sort is stable and has O(n log n) worst-case complexity",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "How do I implement blue-green deployments with Docker Swarm?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Derive the attention mechanism in transformers from the perspective of kernel methods and prove the equivalence",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Design a fault-tolerant distributed database with automatic failover, conflict-free replicated data types, and tunable consistency",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Prove that the Bloom filter false positive rate approaches (1-e^(-kn/m))^k and optimize k",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Derive the bias-variance tradeoff from the expected prediction error decomposition",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "does PostgreSQL support hot reload?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the optimal learning rate schedule for Adam optimizer and prove convergence under mild assumptions",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "does Docker support streaming?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Tim Berners-Leeって誰?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Prove the correctness of the Aho-Corasick algorithm for multiple pattern matching using automata theory",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "how do you say 'database' in Japanese?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the optimal strategy for the multi-armed bandit problem using the UCB1 algorithm with regret bounds",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Implement a multi-version concurrency control system with snapshot isolation and serializable transactions",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Create a webhook delivery system with retry and dead letter queue",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "what's the weather like?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Formally verify that quicksort has O(n log n) average time complexity using probabilistic analysis",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Write a Python tool that profiles memory usage of running processes",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Formally prove that 2-SAT is in P while 3-SAT is NP-complete using polynomial reduction",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "what's the weather like?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Analyze whether the Byzantine fault tolerance algorithm satisfies safety and liveness, and provide a formal proof",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "how old is Elon Musk?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Create a load testing script using k6 with custom metrics",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Design a privacy-preserving analytics system using differential privacy, federated learning, and secure multi-party computation",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Prove that the eigenvalues of a symmetric matrix are real using the spectral theorem",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "hello",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "how many days in a week?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Step by step, derive the expectation-maximization algorithm for Gaussian mixture models",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Write a Python script that compares two database schemas and generates migration SQL",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "recursionの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "こんにちは",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "where is Silicon Valley?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write a tool that detects secrets in git history and rotates them",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a configuration management system that supports env vars and YAML",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Create a database connection pooler with automatic reconnection",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "TypeScriptでフォームバリデーションライブラリを実装して",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Write a migration tool that handles schema changes with zero downtime",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "middlewareの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "is Nginx a database?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "SSLの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Implement retry with exponential backoff for HTTP requests in Go",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "Prove the no-free-lunch theorem for optimization and discuss its implications",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "sure",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Design a distributed event processing system that handles 1M events/sec with exactly-once delivery guarantees and automatic partition rebalancing",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Provide a rigorous mathematical proof that P ≠ NP implies one-way functions exist",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "Prove that the halting problem is undecidable using diagonalization",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a real-time feature engineering platform with online/offline feature consistency, point-in-time correctness, and feature versioning",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "what time is it in Sydney?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Build a recommendation engine with collaborative filtering, content-based filtering, and a hybrid ensemble approach using PyTorch",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "How do I set up PostgreSQL replication for read scaling?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "no",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Design a multi-region active-active architecture for a social media platform with conflict resolution and regional failover",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Prove that the minimax algorithm with alpha-beta pruning produces the same result as full minimax",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "How do I set up Terraform to manage AWS infrastructure?",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "convert 1024 kilograms to Fahrenheit",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "give me a one-liner for getting the date",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Prove the universality of the NAND gate by constructing AND, OR, and NOT from NAND gates",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "what time is it in Sydney?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "再帰的に定義されたアルゴリズムの停止性を構造的帰納法で厳密に証明せよ",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "convert 100 meters to Fahrenheit",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "やあ",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what's up",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Derive the information-theoretic lower bound for comparison-based sorting and prove Ω(n log n)",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "middlewareの意味は?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Design a production ML platform with experiment tracking, model registry, automated retraining, and canary deployments",
+    "tier": "COMPLEX"
+  },
+  {
+    "prompt": "Step by step, prove that first-order logic is complete using Henkin's construction",
+    "tier": "REASONING"
+  },
+  {
+    "prompt": "hey",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Write tests for an API endpoint that requires authentication",
+    "tier": "MEDIUM"
+  },
+  {
+    "prompt": "where is Silicon Valley?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "what's the weather like?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "is the sky blue?",
+    "tier": "SIMPLE"
+  },
+  {
+    "prompt": "Ada Lovelaceって誰?",
+    "tier": "SIMPLE"
+  }
+]

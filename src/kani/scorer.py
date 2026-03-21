@@ -7,14 +7,20 @@ dimension analysis.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
+import pickle
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import tiktoken
 from pydantic import BaseModel, Field
+
+log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -236,12 +242,95 @@ class ClassificationResult:
 # Scorer
 # ---------------------------------------------------------------------------
 
+class EmbeddingClassifier:
+    """Embedding-based tier classifier using a pre-trained sklearn model."""
+
+    _instance: EmbeddingClassifier | None = None
+    _model_dir: Path | None = None
+
+    def __init__(self, model_path: Path) -> None:
+        with open(model_path, "rb") as f:
+            data = pickle.load(f)
+        self.classifier = data["classifier"]
+        self.label_encoder = data["label_encoder"]
+        self.embedding_model: str = data.get("embedding_model", "text-embedding-3-small")
+        self._client: Any | None = None
+
+    @classmethod
+    def load(cls, model_dir: Path | None = None) -> EmbeddingClassifier | None:
+        """Load the classifier singleton. Returns None if model file not found."""
+        if cls._instance is not None and cls._model_dir == model_dir:
+            return cls._instance
+        if model_dir is None:
+            # Default: <project_root>/models/tier_classifier.pkl
+            model_dir = Path(__file__).resolve().parent.parent.parent / "models"
+        pkl = model_dir / "tier_classifier.pkl"
+        if not pkl.exists():
+            return None
+        try:
+            cls._instance = cls(pkl)
+            cls._model_dir = model_dir
+            log.info("Loaded embedding classifier from %s", pkl)
+            return cls._instance
+        except Exception as e:
+            log.warning("Failed to load embedding classifier: %s", e)
+            return None
+
+    def _get_client(self) -> Any:
+        """Lazy-init OpenAI client for embedding inference."""
+        if self._client is not None:
+            return self._client
+        from openai import OpenAI
+        # Prefer OPENAI_API_KEY, fall back to OPENROUTER_API_KEY
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+        base_url = None
+        model = self.embedding_model
+        if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
+            base_url = "https://openrouter.ai/api/v1"
+            # OpenRouter uses provider-prefixed model names
+            if not model.startswith("openai/"):
+                model = f"openai/{model}"
+            self.embedding_model = model
+        if not api_key:
+            raise RuntimeError("No OPENAI_API_KEY or OPENROUTER_API_KEY for embeddings")
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        return self._client
+
+    def predict(self, text: str) -> tuple[Tier, float]:
+        """Predict tier and confidence for a prompt.
+
+        Returns:
+            (tier, confidence) tuple.
+        """
+        import numpy as np
+        client = self._get_client()
+        resp = client.embeddings.create(input=[text], model=self.embedding_model)
+        embedding = np.array([resp.data[0].embedding], dtype=np.float32)
+        proba = self.classifier.predict_proba(embedding)[0]
+        pred_idx = int(np.argmax(proba))
+        tier_name = self.label_encoder.inverse_transform([pred_idx])[0]
+        confidence = float(proba[pred_idx])
+        return Tier(tier_name), confidence
+
+
 class Scorer:
     """15-dimension prompt scoring engine."""
 
-    def __init__(self, config: ScoringConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ScoringConfig | None = None,
+        *,
+        use_embedding: bool = True,
+        embedding_model_dir: Path | None = None,
+        embedding_min_confidence: float = 0.65,
+    ) -> None:
         self.config = config or ScoringConfig()
         self._encoder: tiktoken.Encoding | None = None
+        self._embedding_clf: EmbeddingClassifier | None = None
+        self._use_embedding = use_embedding
+        self._embedding_model_dir = embedding_model_dir
+        self._embedding_min_confidence = embedding_min_confidence
+        self._embedding_loaded = False
 
     @property
     def encoder(self) -> tiktoken.Encoding:
@@ -338,8 +427,53 @@ class Scorer:
 
     # -- main classify -----------------------------------------------------
 
+    def _try_embedding_classify(self, text: str) -> ClassificationResult | None:
+        """Attempt embedding-based classification. Returns None on failure."""
+        if not self._use_embedding:
+            return None
+        # Lazy load once
+        if not self._embedding_loaded:
+            self._embedding_loaded = True
+            self._embedding_clf = EmbeddingClassifier.load(self._embedding_model_dir)
+        if self._embedding_clf is None:
+            return None
+        try:
+            tier, confidence = self._embedding_clf.predict(text)
+            if confidence < self._embedding_min_confidence:
+                log.debug(
+                    "Embedding confidence %.2f < threshold %.2f, falling back to rules",
+                    confidence, self._embedding_min_confidence,
+                )
+                return None
+            return ClassificationResult(
+                score=confidence,
+                tier=tier,
+                confidence=confidence,
+                signals={"method": {"raw": "embedding", "matches": 0}},
+                agentic_score=0.0,
+                dimensions=[],
+            )
+        except Exception as e:
+            log.warning("Embedding classification failed: %s", e)
+            return None
+
     def classify(self, text: str) -> ClassificationResult:
-        """Classify a prompt into a tier with confidence and dimension details."""
+        """Classify a prompt into a tier with confidence and dimension details.
+
+        Strategy: try embedding-based classifier first. If it returns a
+        high-confidence result, use that. Otherwise fall back to the
+        15-dimension rule-based scorer.
+        """
+        # --- Attempt embedding-based classification ---
+        emb_result = self._try_embedding_classify(text)
+        if emb_result is not None:
+            return emb_result
+
+        # --- Fall back to rule-based scoring ---
+        return self._rules_classify(text)
+
+    def _rules_classify(self, text: str) -> ClassificationResult:
+        """15-dimension rule-based classification (original logic)."""
         cfg = self.config
 
         dims: list[DimensionResult] = [
