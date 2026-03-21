@@ -1,5 +1,9 @@
 # 🦀 kani
 
+<p align="center">
+  <img src="assets/cover.png" alt="kani — LLM smart router" width="800" />
+</p>
+
 [![CI](https://github.com/tumf/kani/actions/workflows/ci.yml/badge.svg)](https://github.com/tumf/kani/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
