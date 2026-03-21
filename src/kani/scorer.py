@@ -17,6 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import httpx
 import tiktoken
 from pydantic import BaseModel, Field
 
@@ -313,6 +314,81 @@ class EmbeddingClassifier:
         return Tier(tier_name), confidence
 
 
+class LLMClassifier:
+    """LLM-as-judge classifier for low-confidence escalation.
+
+    Calls an OpenAI-compatible chat completions endpoint to classify
+    prompts into tiers. Used when the rules-based scorer has low confidence.
+    """
+
+    _PROMPT_TEMPLATE = (
+        "Classify this user prompt into exactly one tier: SIMPLE, MEDIUM, "
+        "COMPLEX, or REASONING. Respond with ONLY the tier name, nothing "
+        "else.\n\nUser prompt: {text}"
+    )
+
+    _VALID_TIERS = {"SIMPLE", "MEDIUM", "COMPLEX", "REASONING"}
+
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self.model = model or os.environ.get(
+            "KANI_LLM_CLASSIFIER_MODEL", "google/gemini-2.5-flash-lite"
+        )
+        self.base_url = (
+            base_url
+            or os.environ.get(
+                "KANI_LLM_CLASSIFIER_BASE_URL", "https://openrouter.ai/api/v1"
+            )
+        ).rstrip("/")
+        self.api_key = api_key or os.environ.get(
+            "KANI_LLM_CLASSIFIER_API_KEY"
+        ) or os.environ.get("OPENROUTER_API_KEY", "")
+
+    def classify(self, text: str) -> tuple[Tier, float] | None:
+        """Call the LLM to classify *text*.
+
+        Returns (Tier, 0.8) on success, None on any error or timeout.
+        """
+        prompt = self._PROMPT_TEMPLATE.format(text=text[:500])
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 20,
+                    "temperature": 0.0,
+                },
+                timeout=2.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content: str = (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+                .upper()
+            )
+            # Extract tier name from response (handle extra whitespace / punctuation)
+            for tier_name in self._VALID_TIERS:
+                if tier_name in content:
+                    return Tier(tier_name), 0.8
+            log.warning("LLM classifier returned unrecognised tier: %r", content)
+            return None
+        except Exception as e:
+            log.debug("LLM classifier error: %s", e)
+            return None
+
+
 class Scorer:
     """15-dimension prompt scoring engine."""
 
@@ -323,6 +399,9 @@ class Scorer:
         use_embedding: bool = True,
         embedding_model_dir: Path | None = None,
         embedding_min_confidence: float = 0.65,
+        use_llm_classifier: bool = True,
+        llm_classifier: LLMClassifier | None = None,
+        enable_routing_log: bool = True,
     ) -> None:
         self.config = config or ScoringConfig()
         self._encoder: tiktoken.Encoding | None = None
@@ -331,6 +410,9 @@ class Scorer:
         self._embedding_model_dir = embedding_model_dir
         self._embedding_min_confidence = embedding_min_confidence
         self._embedding_loaded = False
+        self._use_llm_classifier = use_llm_classifier
+        self._llm_classifier = llm_classifier or LLMClassifier()
+        self._enable_routing_log = enable_routing_log
 
     @property
     def encoder(self) -> tiktoken.Encoding:
@@ -460,17 +542,45 @@ class Scorer:
     def classify(self, text: str) -> ClassificationResult:
         """Classify a prompt into a tier with confidence and dimension details.
 
-        Strategy: try embedding-based classifier first. If it returns a
-        high-confidence result, use that. Otherwise fall back to the
-        15-dimension rule-based scorer.
+        Strategy:
+        1. Try embedding-based classifier.
+        2. Fall back to 15-dimension rules-based scorer.
+        3. If rules confidence < min_confidence, escalate to LLM classifier.
+        4. Log the decision via RoutingLogger.
         """
-        # --- Attempt embedding-based classification ---
+        result = self._classify_internal(text)
+
+        if self._enable_routing_log:
+            from kani.logger import RoutingLogger
+            RoutingLogger.log(text, result)
+
+        return result
+
+    def _classify_internal(self, text: str) -> ClassificationResult:
+        """Core classification pipeline."""
+        # --- 1. Attempt embedding-based classification ---
         emb_result = self._try_embedding_classify(text)
         if emb_result is not None:
             return emb_result
 
-        # --- Fall back to rule-based scoring ---
-        return self._rules_classify(text)
+        # --- 2. Rules-based scoring ---
+        rules_result = self._rules_classify(text)
+        rules_result.signals["method"] = {"raw": "rules", "matches": 0}
+
+        # --- 3. LLM escalation when confidence is low ---
+        if rules_result.confidence < self.config.min_confidence and self._use_llm_classifier:
+            llm_result = self._llm_classifier.classify(text)
+            if llm_result is not None:
+                tier, confidence = llm_result
+                rules_result.tier = tier
+                rules_result.confidence = confidence
+                rules_result.signals["method"] = {"raw": "llm", "matches": 0}
+            else:
+                # LLM failed; keep rules result but default tier to MEDIUM
+                rules_result.tier = Tier.MEDIUM
+                rules_result.signals["method"] = {"raw": "rules+fallback", "matches": 0}
+
+        return rules_result
 
     def _rules_classify(self, text: str) -> ClassificationResult:
         """15-dimension rule-based classification (original logic)."""
