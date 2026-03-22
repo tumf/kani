@@ -235,12 +235,51 @@ All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` 
 
 Future: train an embedding classifier from these logs to replace the heuristic rules.
 
+## API key authentication
+
+kani supports API key authentication to restrict proxy access. Keys are managed via the CLI and stored in `$XDG_DATA_HOME/kani/api_keys.json`.
+
+**When no keys are configured, all requests pass through without authentication** (backward-compatible). As soon as one key is added, every API request must include a valid `Authorization: Bearer <key>` header.
+
+```bash
+# Create a key (auto-generated, shown once)
+kani keys add hermes
+#   kani-aBcDeFgH...  ← save this
+
+# List keys (prefix only, secrets are not stored in plaintext)
+kani keys list
+
+# Remove a key by name or prefix
+kani keys remove hermes
+```
+
+Using the key:
+
+```bash
+curl http://localhost:18420/v1/chat/completions \
+  -H "Authorization: Bearer kani-aBcDeFgH..." \
+  -H "Content-Type: application/json" \
+  -d '{"model": "kani/auto", "messages": [{"role": "user", "content": "hello"}]}'
+```
+
+```python
+client = OpenAI(
+    base_url="http://localhost:18420/v1",
+    api_key="kani-aBcDeFgH...",  # kani API key
+)
+```
+
+`/health` and `/docs` are exempt from authentication. No server restart required — keys take effect immediately.
+
 ## CLI
 
 ```bash
 kani serve [--config path] [--host 0.0.0.0] [--port 18420]
 kani route "your prompt here" [--config path]
 kani config [--config path]
+kani keys add <name>
+kani keys list
+kani keys remove <name|prefix>
 ```
 
 ## Architecture
