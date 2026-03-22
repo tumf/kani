@@ -38,8 +38,7 @@ class ConfigNotFoundError(Exception):
         if paths_str:
             msg += f"\nSearched:\n{paths_str}\n"
         msg += (
-            f"\nDefault location: {xdg_path}\n"
-            "Or set KANI_CONFIG=/path/to/config.yaml"
+            f"\nDefault location: {xdg_path}\nOr set KANI_CONFIG=/path/to/config.yaml"
         )
         super().__init__(msg)
         self.searched_paths = searched_paths

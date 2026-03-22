@@ -146,7 +146,7 @@ class TestLLMClassifierCalledLowConfidence:
             enable_routing_log=False,
         )
 
-        result = scorer.classify("What is quantum computing?")
+        scorer.classify("What is quantum computing?")
         mock_llm.classify.assert_not_called()
 
 

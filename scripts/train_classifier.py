@@ -44,7 +44,9 @@ def get_embeddings(
     all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), BATCH_SIZE):
         batch = texts[i : i + BATCH_SIZE]
-        print(f"  Embedding batch {i // BATCH_SIZE + 1}/{(len(texts) - 1) // BATCH_SIZE + 1} ({len(batch)} items)...")
+        print(
+            f"  Embedding batch {i // BATCH_SIZE + 1}/{(len(texts) - 1) // BATCH_SIZE + 1} ({len(batch)} items)..."
+        )
         resp = client.embeddings.create(input=batch, model=model)
         for item in resp.data:
             all_embeddings.append(item.embedding)
@@ -80,9 +82,15 @@ def load_or_compute_embeddings(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train kani tier classifier")
-    parser.add_argument("--data", default="data/training_prompts.json", help="Training data JSON")
-    parser.add_argument("--output", default="models", help="Output directory for model files")
-    parser.add_argument("--cache", default="data/cache", help="Embedding cache directory")
+    parser.add_argument(
+        "--data", default="data/training_prompts.json", help="Training data JSON"
+    )
+    parser.add_argument(
+        "--output", default="models", help="Output directory for model files"
+    )
+    parser.add_argument(
+        "--cache", default="data/cache", help="Embedding cache directory"
+    )
     args = parser.parse_args()
 
     # Load data

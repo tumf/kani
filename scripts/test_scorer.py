@@ -15,4 +15,6 @@ tests = [
 for t in tests:
     r = s.classify(t)
     method = r.signals.get("method", {}).get("raw", "rules")
-    print(f"[{r.tier.value:9s}] conf={r.confidence:.3f} method={method!s:9s} | {t[:70]}")
+    print(
+        f"[{r.tier.value:9s}] conf={r.confidence:.3f} method={method!s:9s} | {t[:70]}"
+    )

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import textwrap
+from typing import NoReturn
 
 import click
 
 from kani.config import ConfigIncompleteError, ConfigNotFoundError
 
 
-def _handle_config_error(e: ConfigNotFoundError | ConfigIncompleteError) -> None:
+def _handle_config_error(e: ConfigNotFoundError | ConfigIncompleteError) -> NoReturn:
     """Print a user-friendly config error and exit."""
     click.echo(f"Error: {e}", err=True)
     raise SystemExit(1)
@@ -187,7 +187,7 @@ def init_cmd(output_path: str | None, force: bool):
     click.echo()
     click.echo("Next steps:")
     click.echo("  1. Edit the config to add your API keys and preferred models")
-    click.echo("  2. Run `kani route \"hello\"` to test routing")
+    click.echo('  2. Run `kani route "hello"` to test routing')
     click.echo("  3. Run `kani serve` to start the proxy server")
 
 

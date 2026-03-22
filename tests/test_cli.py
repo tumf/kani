@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import tempfile
-from pathlib import Path
+import json
 
 import pytest
 from click.testing import CliRunner
@@ -57,10 +55,7 @@ class TestConfigErrors:
         # Config file exists but has no profiles
         config_path = empty_dir / "config.yaml"
         config_path.write_text("host: 0.0.0.0\nport: 18420\n")
-        monkeypatch_env = os.environ.copy()
-        result = runner.invoke(
-            main, ["route", "hello", "--config", str(config_path)]
-        )
+        result = runner.invoke(main, ["route", "hello", "--config", str(config_path)])
         assert result.exit_code != 0
         assert "missing required section" in result.output
         assert "profiles" in result.output
@@ -141,7 +136,3 @@ class TestInitCommand:
         data = json.loads(result.output)
         assert "model" in data
         assert "tier" in data
-
-
-# Need json import for the last test
-import json
