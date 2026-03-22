@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import textwrap
 
 import click
 
+from kani.config import ConfigIncompleteError, ConfigNotFoundError
 
-def _resolve_config(ctx_config: str | None) -> str:
-    """Return config path from CLI flag, env-var, or default."""
-    if ctx_config:
-        return ctx_config
-    return os.environ.get("KANI_CONFIG", "./config.yaml")
+
+def _handle_config_error(e: ConfigNotFoundError | ConfigIncompleteError) -> None:
+    """Print a user-friendly config error and exit."""
+    click.echo(f"Error: {e}", err=True)
+    raise SystemExit(1)
 
 
 @click.group()
@@ -29,18 +32,20 @@ def serve(config_path: str | None, host: str | None, port: int | None):
     """Start the kani proxy server."""
     import uvicorn
 
+    from kani.config import load_config
     from kani.proxy import app, configure
 
-    path = _resolve_config(config_path)
-    configure(path)
+    try:
+        cfg = load_config(config_path, strict=True)
+    except (ConfigNotFoundError, ConfigIncompleteError) as e:
+        _handle_config_error(e)
 
-    from kani.proxy import _config
+    configure(config_path)
 
-    bind_host = host or (_config.host if _config else "0.0.0.0")
-    bind_port = port or (_config.port if _config else 8000)
+    bind_host = host or cfg.host
+    bind_port = port or cfg.port
 
     click.echo(f"Starting kani proxy on {bind_host}:{bind_port}")
-    click.echo(f"Config: {path}")
 
     uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
 
@@ -56,8 +61,11 @@ def route_cmd(prompt: str, config_path: str | None, profile: str | None):
     from kani.config import load_config
     from kani.router import Router
 
-    path = _resolve_config(config_path)
-    cfg = load_config(path)
+    try:
+        cfg = load_config(config_path, strict=True)
+    except (ConfigNotFoundError, ConfigIncompleteError) as e:
+        _handle_config_error(e)
+
     router = Router(cfg)
 
     messages = [{"role": "user", "content": prompt}]
@@ -72,10 +80,11 @@ def config_cmd(config_path: str | None):
     """Show current configuration."""
     from kani.config import load_config
 
-    path = _resolve_config(config_path)
-    cfg = load_config(path)
+    try:
+        cfg = load_config(config_path, strict=True)
+    except (ConfigNotFoundError, ConfigIncompleteError) as e:
+        _handle_config_error(e)
 
-    click.echo(f"Config file: {path}")
     click.echo(f"Host: {cfg.host}")
     click.echo(f"Port: {cfg.port}")
     click.echo(f"Default provider: {cfg.default_provider}")
@@ -93,6 +102,93 @@ def config_cmd(config_path: str | None):
     click.echo("Profiles:")
     for name, prof in cfg.profiles.items():
         click.echo(f"  {name}: {prof}")
+
+
+# ---------------------------------------------------------------------------
+# kani init — generate a starter config
+# ---------------------------------------------------------------------------
+
+_STARTER_CONFIG = textwrap.dedent("""\
+    # Kani Smart Router — Configuration
+    # Docs: https://github.com/tumf/kani#configuration
+    #
+    # Env vars: use ${VAR_NAME} syntax for secrets.
+
+    host: "0.0.0.0"
+    port: 18420
+
+    default_provider: openrouter
+    default_profile: auto
+
+    # ---------------------------------------------------------------------------
+    # Providers — add your LLM backends here
+    # ---------------------------------------------------------------------------
+    providers:
+      openrouter:
+        name: openrouter
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: "${OPENROUTER_API_KEY}"
+
+    # ---------------------------------------------------------------------------
+    # Routing Profiles
+    # ---------------------------------------------------------------------------
+    profiles:
+      auto:
+        tiers:
+          SIMPLE:
+            primary: "google/gemini-2.5-flash"
+            fallback: []
+            provider: default
+          MEDIUM:
+            primary: "anthropic/claude-sonnet-4"
+            fallback:
+              - "openai/gpt-4.1"
+            provider: default
+          COMPLEX:
+            primary: "anthropic/claude-opus-4"
+            fallback:
+              - "openai/o3"
+            provider: default
+          REASONING:
+            primary: "anthropic/claude-opus-4"
+            fallback:
+              - "openai/o3"
+            provider: default
+""")
+
+
+@main.command("init")
+@click.option(
+    "--path",
+    "output_path",
+    default=None,
+    help="Where to write config (default: XDG config dir)",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing config")
+def init_cmd(output_path: str | None, force: bool):
+    """Create a starter configuration file."""
+    from kani.dirs import config_dir
+
+    if output_path:
+        target = os.path.expanduser(output_path)
+    else:
+        target = str(config_dir() / "config.yaml")
+
+    if os.path.exists(target) and not force:
+        click.echo(f"Config already exists: {target}")
+        click.echo("Use --force to overwrite.")
+        raise SystemExit(1)
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w") as f:
+        f.write(_STARTER_CONFIG)
+
+    click.echo(f"Created starter config: {target}")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo("  1. Edit the config to add your API keys and preferred models")
+    click.echo("  2. Run `kani route \"hello\"` to test routing")
+    click.echo("  3. Run `kani serve` to start the proxy server")
 
 
 if __name__ == "__main__":

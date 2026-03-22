@@ -15,6 +15,54 @@ from pydantic import BaseModel, Field
 
 
 # ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+
+class ConfigNotFoundError(Exception):
+    """Raised when no configuration file can be found."""
+
+    def __init__(self, searched_paths: list[Path] | None = None) -> None:
+        from kani.dirs import config_dir
+
+        xdg_path = config_dir() / "config.yaml"
+        paths_str = ""
+        if searched_paths:
+            paths_str = "\n".join(f"  - {p}" for p in searched_paths)
+
+        msg = (
+            "No kani configuration file found.\n"
+            "\n"
+            "Run `kani init` to create a starter config, or create one manually.\n"
+        )
+        if paths_str:
+            msg += f"\nSearched:\n{paths_str}\n"
+        msg += (
+            f"\nDefault location: {xdg_path}\n"
+            "Or set KANI_CONFIG=/path/to/config.yaml"
+        )
+        super().__init__(msg)
+        self.searched_paths = searched_paths
+
+
+class ConfigIncompleteError(Exception):
+    """Raised when config exists but is missing required sections (e.g. profiles)."""
+
+    def __init__(self, missing: str, config_path: Path | None = None) -> None:
+        loc = f" ({config_path})" if config_path else ""
+        msg = (
+            f"Configuration{loc} is missing required section: {missing}\n"
+            "\n"
+            "Run `kani init` to generate a complete starter config,\n"
+            "or add the missing section to your config file.\n"
+            "See: https://github.com/tumf/kani#configuration"
+        )
+        super().__init__(msg)
+        self.missing = missing
+        self.config_path = config_path
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
@@ -135,12 +183,16 @@ def load_config(
     path: str | Path | None = None,
     *,
     overrides: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> KaniConfig:
     """Load KaniConfig from a YAML file with env-var resolution.
 
     Args:
         path: Explicit path to config YAML, or None to auto-discover.
         overrides: Dict of overrides merged on top of file config.
+        strict: If True, raise ConfigNotFoundError / ConfigIncompleteError
+                when the config is missing or incomplete. Default False
+                preserves backward compatibility (returns empty defaults).
 
     Returns:
         Fully resolved KaniConfig instance.
@@ -148,11 +200,18 @@ def load_config(
     raw: dict[str, Any] = {}
 
     config_file = _find_config_file(path)
+
     if config_file is not None:
         with open(config_file) as f:
             loaded = yaml.safe_load(f)
             if isinstance(loaded, dict):
                 raw = loaded
+    elif strict:
+        # Explicit path given but not found
+        if path is not None:
+            raise ConfigNotFoundError([Path(path).expanduser()])
+        # Auto-discovery failed
+        raise ConfigNotFoundError(_default_config_paths())
 
     # Merge overrides
     if overrides:
@@ -161,7 +220,12 @@ def load_config(
     # Resolve env vars in raw data
     raw = resolve_env_recursive(raw)
 
-    return KaniConfig.model_validate(raw)
+    cfg = KaniConfig.model_validate(raw)
+
+    if strict and not cfg.profiles:
+        raise ConfigIncompleteError("profiles", config_file)
+
+    return cfg
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
