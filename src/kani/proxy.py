@@ -13,7 +13,9 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from kani.api_keys import has_keys, validate_key
 from kani.config import KaniConfig, load_config
 from kani.router import Router, RoutingDecision
 
@@ -69,6 +71,35 @@ async def lifespan(app: FastAPI):
 # ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="kani", version="0.1.0", lifespan=lifespan)
+
+
+# ── Auth middleware ─────────────────────────────────────────────────────────
+
+_AUTH_EXEMPT = {"/health", "/docs", "/openapi.json"}
+
+
+class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
+    """Require a valid Bearer token when API keys are configured."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Skip auth if no keys configured (backward-compat)
+        if not has_keys():
+            return await call_next(request)
+
+        # Exempt non-API paths
+        if request.url.path in _AUTH_EXEMPT:
+            return await call_next(request)
+
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+            if validate_key(token):
+                return await call_next(request)
+
+        return _openai_error(401, "Invalid or missing API key", "authentication_error")
+
+
+app.add_middleware(ApiKeyAuthMiddleware)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

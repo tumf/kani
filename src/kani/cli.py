@@ -191,5 +191,58 @@ def init_cmd(output_path: str | None, force: bool):
     click.echo("  3. Run `kani serve` to start the proxy server")
 
 
+# ---------------------------------------------------------------------------
+# kani keys — API key management
+# ---------------------------------------------------------------------------
+
+
+@main.group("keys")
+def keys_group():
+    """Manage API keys for kani proxy access."""
+
+
+@keys_group.command("add")
+@click.argument("name")
+def keys_add(name: str):
+    """Create a new API key with the given NAME label."""
+    from kani.api_keys import generate_key
+
+    raw = generate_key(name)
+    click.echo(f"Created API key: {name}")
+    click.echo()
+    click.echo(f"  {raw}")
+    click.echo()
+    click.echo("Save this key — it cannot be shown again.")
+
+
+@keys_group.command("list")
+def keys_list():
+    """List all API keys (names and prefixes only)."""
+    from kani.api_keys import list_keys
+
+    entries = list_keys()
+    if not entries:
+        click.echo("No API keys configured. Use `kani keys add <name>` to create one.")
+        return
+
+    click.echo(f"{'NAME':<20} {'PREFIX':<12}")
+    click.echo("-" * 32)
+    for entry in entries:
+        click.echo(f"{entry.name:<20} {entry.prefix:<12}")
+
+
+@keys_group.command("remove")
+@click.argument("identifier")
+def keys_remove(identifier: str):
+    """Remove an API key by NAME or PREFIX."""
+    from kani.api_keys import remove_key
+
+    if remove_key(identifier):
+        click.echo(f"Removed API key: {identifier}")
+    else:
+        click.echo(f"No API key found matching: {identifier}")
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()
