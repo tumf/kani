@@ -1,0 +1,152 @@
+# Kani Smart Router – Configuration Example
+# ------------------------------------------
+# Copy this file to config.yaml and fill in your values.
+# Env vars are supported: use ${VAR_NAME} syntax.
+#
+# Usage:
+#   cp config.example.yaml config.yaml
+#   # edit config.yaml with your providers / models
+#
+# When running via Docker Compose, pass secrets via .env or
+# YAML ${...} substitution. config.yaml is gitignored.
+
+host: "0.0.0.0"
+port: 18420
+
+default_provider: openrouter   # override to your preferred provider
+default_profile: auto
+
+# ---------------------------------------------------------------------------
+# LLM Classifier (optional — escalation when rule confidence < 0.7)
+# ---------------------------------------------------------------------------
+# Uncomment and configure to enable LLM-based tier classification.
+# When running inside Docker, use host.docker.internal to reach host services.
+#
+# llm_classifier:
+#     model: "gpt-4o-mini"
+#     base_url: "https://openrouter.ai/api/v1"
+#     api_key: "${OPENROUTER_API_KEY}"
+
+# ---------------------------------------------------------------------------
+# Providers
+# ---------------------------------------------------------------------------
+providers:
+    openrouter:
+        name: openrouter
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: "${OPENROUTER_API_KEY}"
+
+    # Example: local OpenAI-compatible proxy (e.g. cli-proxy, LiteLLM, etc.)
+    # When kani runs in Docker, use host.docker.internal instead of 127.0.0.1.
+    #
+    # local_proxy:
+    #     name: local_proxy
+    #     base_url: "http://host.docker.internal:8317/v1"
+    #     api_key: "${LOCAL_PROXY_API_KEY}"
+
+# ---------------------------------------------------------------------------
+# Routing Profiles
+# ---------------------------------------------------------------------------
+# Each profile has four tiers: SIMPLE / MEDIUM / COMPLEX / REASONING.
+# primary: model to use first
+# fallback: list of models tried on upstream error (5xx / timeout)
+# provider: optional override; defaults to default_provider
+#
+# Tier selection is automatic based on prompt complexity scoring.
+# To route all requests to one profile, set default_profile above.
+
+profiles:
+    # ── auto: balanced cost / quality ──────────────────────────────────────
+    auto:
+        tiers:
+            SIMPLE:
+                primary: "gpt-4o-mini"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+            MEDIUM:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            COMPLEX:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-opus-4-20250514"
+            REASONING:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-opus-4-20250514"
+
+    # ── eco: cheapest viable models ─────────────────────────────────────────
+    eco:
+        tiers:
+            SIMPLE:
+                primary: "gpt-4o-mini"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+            MEDIUM:
+                primary: "gpt-4o-mini"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+            COMPLEX:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            REASONING:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+
+    # ── premium: best quality models ─────────────────────────────────────────
+    premium:
+        tiers:
+            SIMPLE:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            MEDIUM:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            COMPLEX:
+                primary: "gpt-4o"
+                fallback:
+                    - model: "anthropic/claude-opus-4"
+                      provider: openrouter
+            REASONING:
+                primary: "gpt-4o"
+                fallback:
+                    - model: "anthropic/claude-opus-4"
+                      provider: openrouter
+
+    # ── agentic: optimized for tool use / function calling ──────────────────
+    agentic:
+        tiers:
+            SIMPLE:
+                primary: "gpt-4o-mini"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+            MEDIUM:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            COMPLEX:
+                primary: "gpt-4o"
+                fallback:
+                    - "claude-sonnet-4-5-20250929"
+            REASONING:
+                primary: "gpt-4o"
+                fallback:
+                    - model: "anthropic/claude-opus-4"
+                      provider: openrouter
+
+    # ── compress: cheap/fast model for summarisation tasks ──────────────────
+    compress:
+        tiers:
+            SIMPLE:
+                primary: "gpt-4o-mini"
+            MEDIUM:
+                primary: "gpt-4o-mini"
+            COMPLEX:
+                primary: "gpt-4o-mini"
+            REASONING:
+                primary: "gpt-4o-mini"

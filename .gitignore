@@ -11,3 +11,8 @@ wheels/
 .venv/
 __pycache__/
 *.pyc
+
+# Local configuration — never commit personal settings
+config.yaml
+.env
+data/

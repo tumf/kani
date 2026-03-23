@@ -5,17 +5,24 @@ services:
     restart: unless-stopped
     networks:
       - caddy
+    ports:
+      # Expose on localhost so host-side clients (e.g. Hermes) can reach kani.
+      # Remove or change the host binding if kani is only accessed via Docker networks.
+      - "127.0.0.1:18420:18420"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - /Users/tumf/.local/state/kani/log:/root/.local/state/kani/log:rw
-      - /Users/tumf/.local/share/kani:/root/.local/share/kani:rw
-    # mount models/ if you have a trained tier_classifier.pkl
-    # - ./models:/app/models:ro
+      # Log / data dirs — adjust paths or use named volumes as needed.
+      - ${KANI_LOG_DIR:-./data/log}:/root/.local/state/kani/log:rw
+      - ${KANI_DATA_DIR:-./data/share}:/root/.local/share/kani:rw
+      # Uncomment to supply a pre-trained tier_classifier.pkl:
+      # - ./models:/app/models:ro
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      # Optional: embedding / LLM classifier overrides
-      # - OPENAI_API_KEY=***
-      # - KANI_LLM_CLASSIFIER_MODEL=google/gemini-2.5-flash-lite
+      # Add extra provider keys used in config.yaml:
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # - LOCAL_PROXY_API_KEY=${LOCAL_PROXY_API_KEY}
+      # Optional: override classifier model/URL at runtime
+      # - KANI_LLM_CLASSIFIER_MODEL=gpt-4o-mini
       # - KANI_LLM_CLASSIFIER_BASE_URL=https://openrouter.ai/api/v1
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:18420/health').raise_for_status()"]
