@@ -1,31 +1,50 @@
-"""Kani Scoring Engine - 15-dimension prompt classifier.
+"""Kani scoring engine.
 
-A Python port of ClawRouter's scoring system. Classifies prompts into
-four tiers: SIMPLE, MEDIUM, COMPLEX, REASONING based on weighted
-dimension analysis.
+Model-first prompt classifier used by the router.
+
+The old keyword-heavy rules engine has been removed in favor of:
+1. a trained embedding classifier when available
+2. an LLM classifier as the uncertainty fallback
+3. a conservative default when neither model can decide
 """
 
 from __future__ import annotations
 
 import logging
-import math
 import os
 import pickle
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import httpx
-import tiktoken
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 log = logging.getLogger(__name__)
 
 
+def _build_embedding_client(model_name: str) -> tuple[Any, str]:
+    """Create an embedding client using OpenAI or OpenRouter env vars."""
+    from openai import OpenAI
+
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
+    base_url = None
+    resolved_model = model_name
+
+    if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
+        base_url = "https://openrouter.ai/api/v1"
+        if not resolved_model.startswith("openai/"):
+            resolved_model = f"openai/{resolved_model}"
+
+    if not api_key:
+        raise RuntimeError("No OPENAI_API_KEY or OPENROUTER_API_KEY for embeddings")
+
+    return OpenAI(api_key=api_key, base_url=base_url), resolved_model
+
+
 # ---------------------------------------------------------------------------
-# Enums
+# Enums / config
 # ---------------------------------------------------------------------------
 
 
@@ -36,364 +55,26 @@ class Tier(str, Enum):
     REASONING = "REASONING"
 
 
-# ---------------------------------------------------------------------------
-# Configuration (fully overridable via Pydantic model)
-# ---------------------------------------------------------------------------
-
-
-class KeywordDimensionConfig(BaseModel):
-    """Config for a single keyword-match dimension."""
-
-    keywords: list[str]
-    low_threshold: int = 1
-    high_threshold: int = 3
-    none_score: float = 0.0
-    low_score: float = 0.5
-    high_score: float = 1.0
-
-
 class ScoringConfig(BaseModel):
-    """Master configuration for the scoring engine."""
+    """Configuration for the model-first scoring pipeline."""
 
-    # -- Keyword dimensions ------------------------------------------------
-    code_presence: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "function",
-            "class",
-            "import",
-            "def",
-            "SELECT",
-            "async",
-            "await",
-            "const",
-            "let",
-            "var",
-            "return",
-            "```",
-            # JP
-            "関数",
-            "クラス",
-            "インポート",
-            "非同期",
-            "定数",
-            "変数",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    reasoning_markers: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "prove",
-            "theorem",
-            "derive",
-            "step by step",
-            "chain of thought",
-            "formally",
-            "mathematical",
-            "proof",
-            "logically",
-            # JP
-            "証明",
-            "定理",
-            "導出",
-            "ステップバイステップ",
-            "論理的",
-        ],
-        low_threshold=1,
-        high_threshold=2,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    technical_terms: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "algorithm",
-            "optimize",
-            "architecture",
-            "distributed",
-            "kubernetes",
-            "microservice",
-            "database",
-            "infrastructure",
-            # JP
-            "アルゴリズム",
-            "最適化",
-            "アーキテクチャ",
-            "分散",
-            "マイクロサービス",
-            "データベース",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    creative_markers: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "story",
-            "poem",
-            "compose",
-            "brainstorm",
-            "creative",
-            "imagine",
-            "write a",
-            # JP
-            "物語",
-            "詩",
-            "作曲",
-            "ブレインストーム",
-            "創造的",
-            "想像",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    simple_indicators: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "what is",
-            "define",
-            "translate",
-            "hello",
-            "yes or no",
-            "capital of",
-            "how old",
-            "who is",
-            "when was",
-            # JP
-            "とは",
-            "定義",
-            "翻訳",
-            "こんにちは",
-            "はいかいいえ",
-            "首都",
-            "誰",
-        ],
-        low_threshold=1,
-        high_threshold=2,
-        none_score=0.0,
-        low_score=-0.5,
-        high_score=-1.0,
-    )
-
-    imperative_verbs: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "build",
-            "create",
-            "implement",
-            "design",
-            "develop",
-            "construct",
-            "generate",
-            "deploy",
-            "configure",
-            "set up",
-            # JP
-            "構築",
-            "作成",
-            "実装",
-            "設計",
-            "開発",
-            "生成",
-            "デプロイ",
-            "設定",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    constraint_count: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "must",
-            "should",
-            "ensure",
-            "require",
-            "constraint",
-            "limit",
-            "boundary",
-            "within",
-            # JP
-            "必須",
-            "すべき",
-            "確保",
-            "要求",
-            "制約",
-            "制限",
-            "境界",
-            "以内",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    output_format: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "json",
-            "csv",
-            "table",
-            "markdown",
-            "yaml",
-            "xml",
-            "format as",
-            "output as",
-        ],
-        low_threshold=1,
-        high_threshold=2,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    reference_complexity: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "according to",
-            "based on",
-            "reference",
-            "citing",
-            "as mentioned",
-            "per the",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    negation_complexity: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "not",
-            "don't",
-            "without",
-            "except",
-            "exclude",
-            "never",
-            "nor",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    domain_specificity: KeywordDimensionConfig = KeywordDimensionConfig(
-        keywords=[
-            "medical",
-            "legal",
-            "financial",
-            "scientific",
-            "academic",
-            "clinical",
-            "regulatory",
-            "compliance",
-        ],
-        low_threshold=1,
-        high_threshold=3,
-        none_score=0.0,
-        low_score=0.5,
-        high_score=1.0,
-    )
-
-    agentic_keywords: list[str] = Field(
-        default=[
-            "read file",
-            "edit",
-            "modify",
-            "update",
-            "execute",
-            "run",
-            "deploy",
-            "install",
-            "step 1",
-            "step 2",
-            "fix",
-            "debug",
-            "check",
-            # JP
-            "ファイル読み込み",
-            "編集",
-            "修正",
-            "更新",
-            "実行",
-            "デプロイ",
-            "インストール",
-            "ステップ1",
-            "ステップ2",
-            "修正",
-            "デバッグ",
-            "確認",
-        ]
-    )
-
-    # -- Multi-step regex patterns -----------------------------------------
-    multi_step_patterns: list[str] = Field(
-        default=[
-            r"first.*then",
-            r"step \d",
-            r"\d\.\s",
-        ]
-    )
-
-    # -- Dimension weights -------------------------------------------------
-    weights: dict[str, float] = Field(
-        default={
-            "tokenCount": 0.08,
-            "codePresence": 0.15,
-            "reasoningMarkers": 0.18,
-            "technicalTerms": 0.10,
-            "creativeMarkers": 0.05,
-            "simpleIndicators": 0.02,
-            "multiStepPatterns": 0.12,
-            "questionComplexity": 0.05,
-            "imperativeVerbs": 0.03,
-            "constraintCount": 0.04,
-            "outputFormat": 0.03,
-            "referenceComplexity": 0.02,
-            "negationComplexity": 0.01,
-            "domainSpecificity": 0.02,
-            "agenticTask": 0.04,
-        }
-    )
-
-    # -- Tier boundaries ---------------------------------------------------
-    simple_medium_boundary: float = 0.0
-    medium_complex_boundary: float = 0.3
-    complex_reasoning_boundary: float = 0.5
-
-    # -- Confidence sigmoid ------------------------------------------------
-    sigmoid_steepness: float = 12.0
     min_confidence: float = 0.7
-
-    # -- Reasoning override ------------------------------------------------
-    reasoning_override_min_matches: int = 2
-    reasoning_override_min_confidence: float = 0.85
+    fallback_tier: Tier = Tier.MEDIUM
+    fallback_confidence: float = 0.35
 
 
 # ---------------------------------------------------------------------------
-# Result dataclass
+# Results
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DimensionResult:
-    """Score for a single dimension."""
+    """Retained for API compatibility.
+
+    The keyword-based dimension scorer has been removed, so callers should expect
+    this list to usually be empty.
+    """
 
     name: str
     raw_score: float
@@ -415,7 +96,7 @@ class ClassificationResult:
 
 
 # ---------------------------------------------------------------------------
-# Scorer
+# Embedding classifier
 # ---------------------------------------------------------------------------
 
 
@@ -441,7 +122,6 @@ class EmbeddingClassifier:
         if cls._instance is not None and cls._model_dir == model_dir:
             return cls._instance
         if model_dir is None:
-            # Default: <project_root>/models/tier_classifier.pkl
             model_dir = Path(__file__).resolve().parent.parent.parent / "models"
         pkl = model_dir / "tier_classifier.pkl"
         if not pkl.exists():
@@ -451,41 +131,22 @@ class EmbeddingClassifier:
             cls._model_dir = model_dir
             log.info("Loaded embedding classifier from %s", pkl)
             return cls._instance
-        except Exception as e:
-            log.warning("Failed to load embedding classifier: %s", e)
+        except Exception as exc:
+            log.warning("Failed to load embedding classifier: %s", exc)
             return None
 
     def _get_client(self) -> Any:
         """Lazy-init OpenAI client for embedding inference."""
         if self._client is not None:
             return self._client
-        from openai import OpenAI
 
-        # Prefer OPENAI_API_KEY, fall back to OPENROUTER_API_KEY
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get(
-            "OPENROUTER_API_KEY"
+        self._client, self.embedding_model = _build_embedding_client(
+            self.embedding_model
         )
-        base_url = None
-        model = self.embedding_model
-        if not os.environ.get("OPENAI_API_KEY") and os.environ.get(
-            "OPENROUTER_API_KEY"
-        ):
-            base_url = "https://openrouter.ai/api/v1"
-            # OpenRouter uses provider-prefixed model names
-            if not model.startswith("openai/"):
-                model = f"openai/{model}"
-            self.embedding_model = model
-        if not api_key:
-            raise RuntimeError("No OPENAI_API_KEY or OPENROUTER_API_KEY for embeddings")
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
         return self._client
 
     def predict(self, text: str) -> tuple[Tier, float]:
-        """Predict tier and confidence for a prompt.
-
-        Returns:
-            (tier, confidence) tuple.
-        """
+        """Predict tier and confidence for a prompt."""
         import numpy as np
 
         client = self._get_client()
@@ -498,12 +159,82 @@ class EmbeddingClassifier:
         return Tier(tier_name), confidence
 
 
-class LLMClassifier:
-    """LLM-as-judge classifier for low-confidence escalation.
+class AgenticEmbeddingClassifier:
+    """Embedding-based AGENTIC/NON_AGENTIC classifier."""
 
-    Calls an OpenAI-compatible chat completions endpoint to classify
-    prompts into tiers. Used when the rules-based scorer has low confidence.
-    """
+    _instance: AgenticEmbeddingClassifier | None = None
+    _model_dir: Path | None = None
+
+    def __init__(self, model_path: Path) -> None:
+        with open(model_path, "rb") as f:
+            data = pickle.load(f)
+        if data.get("label_type") not in {None, "agentic"}:
+            raise ValueError("Model bundle is not an agentic classifier")
+        self.classifier = data["classifier"]
+        self.label_encoder = data["label_encoder"]
+        self.embedding_model: str = data.get(
+            "embedding_model", "text-embedding-3-small"
+        )
+        self._client: Any | None = None
+
+    @classmethod
+    def load(cls, model_dir: Path | None = None) -> AgenticEmbeddingClassifier | None:
+        """Load the classifier singleton. Returns None if model file not found."""
+        if cls._instance is not None and cls._model_dir == model_dir:
+            return cls._instance
+        if model_dir is None:
+            model_dir = Path(__file__).resolve().parent.parent.parent / "models"
+        pkl = model_dir / "agentic_classifier.pkl"
+        if not pkl.exists():
+            return None
+        try:
+            cls._instance = cls(pkl)
+            cls._model_dir = model_dir
+            log.info("Loaded agentic embedding classifier from %s", pkl)
+            return cls._instance
+        except Exception as exc:
+            log.warning("Failed to load agentic embedding classifier: %s", exc)
+            return None
+
+    def _get_client(self) -> Any:
+        """Lazy-init OpenAI client for embedding inference."""
+        if self._client is not None:
+            return self._client
+
+        self._client, self.embedding_model = _build_embedding_client(
+            self.embedding_model
+        )
+        return self._client
+
+    def predict(self, text: str) -> tuple[float, str, float]:
+        """Return (agentic_score, label, confidence) for a prompt."""
+        import numpy as np
+
+        client = self._get_client()
+        resp = client.embeddings.create(input=[text], model=self.embedding_model)
+        embedding = np.array([resp.data[0].embedding], dtype=np.float32)
+        proba = self.classifier.predict_proba(embedding)[0]
+        pred_idx = int(np.argmax(proba))
+        label = str(self.label_encoder.inverse_transform([pred_idx])[0])
+        confidence = float(proba[pred_idx])
+
+        classes = [str(name) for name in self.label_encoder.classes_]
+        try:
+            agentic_idx = classes.index("AGENTIC")
+        except ValueError as exc:
+            raise ValueError("Agentic classifier is missing AGENTIC label") from exc
+
+        agentic_score = float(proba[agentic_idx])
+        return agentic_score, label, confidence
+
+
+# ---------------------------------------------------------------------------
+# LLM classifier
+# ---------------------------------------------------------------------------
+
+
+class LLMClassifier:
+    """LLM-as-judge classifier for uncertainty fallback."""
 
     _PROMPT_TEMPLATE = (
         "Classify this user prompt into exactly one tier: SIMPLE, MEDIUM, "
@@ -534,12 +265,8 @@ class LLMClassifier:
             or os.environ.get("OPENROUTER_API_KEY", "")
         )
 
-    def classify(self, text: str) -> tuple[Tier, float] | None:
-        """Call the LLM to classify *text*.
-
-        Returns (Tier, 0.8) on success, None on any error or timeout.
-        """
-        prompt = self._PROMPT_TEMPLATE.format(text=text[:500])
+    def _call_llm(self, prompt: str, *, max_tokens: int = 20) -> str | None:
+        """Send a classification prompt and return normalized content."""
         try:
             resp = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -550,33 +277,136 @@ class LLMClassifier:
                 json={
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 20,
+                    "max_tokens": max_tokens,
                     "temperature": 0.0,
                 },
                 timeout=2.0,
             )
             resp.raise_for_status()
             data = resp.json()
-            content: str = (
+            return (
                 data.get("choices", [{}])[0]
                 .get("message", {})
                 .get("content", "")
                 .strip()
                 .upper()
             )
-            # Extract tier name from response (handle extra whitespace / punctuation)
-            for tier_name in self._VALID_TIERS:
-                if tier_name in content:
-                    return Tier(tier_name), 0.8
-            log.warning("LLM classifier returned unrecognised tier: %r", content)
+        except Exception as exc:
+            log.debug("LLM classifier error: %s", exc)
             return None
-        except Exception as e:
-            log.debug("LLM classifier error: %s", e)
+
+    def classify(self, text: str) -> tuple[Tier, float] | None:
+        """Call the LLM to classify *text*.
+
+        Returns (Tier, 0.8) on success, None on any error or timeout.
+        """
+        prompt = self._PROMPT_TEMPLATE.format(text=text[:500])
+        content = self._call_llm(prompt)
+        if content is None:
             return None
+        for tier_name in self._VALID_TIERS:
+            if tier_name in content:
+                return Tier(tier_name), 0.8
+        log.warning("LLM classifier returned unrecognised tier: %r", content)
+        return None
+
+
+class AgenticClassifier:
+    """Cheap binary classifier for action-oriented prompts."""
+
+    _PROMPT_TEMPLATE = (
+        "Decide whether this user prompt is AGENTIC or NON_AGENTIC. "
+        "AGENTIC means the user is primarily asking the model to take actions "
+        "using tools or external systems, such as editing files, running "
+        "commands, browsing, calling APIs, or executing a multi-step task in "
+        "the world. NON_AGENTIC means the user mainly wants a text answer, "
+        "analysis, explanation, summary, or advice. Respond with ONLY "
+        "AGENTIC or NON_AGENTIC.\n\nUser prompt: {text}"
+    )
+
+    def __init__(
+        self,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        self.model = model or os.environ.get(
+            "KANI_AGENTIC_CLASSIFIER_MODEL",
+            os.environ.get("KANI_LLM_CLASSIFIER_MODEL", "google/gemini-2.5-flash-lite"),
+        )
+        self.base_url = (
+            base_url
+            or os.environ.get(
+                "KANI_AGENTIC_CLASSIFIER_BASE_URL",
+                os.environ.get(
+                    "KANI_LLM_CLASSIFIER_BASE_URL", "https://openrouter.ai/api/v1"
+                ),
+            )
+        ).rstrip("/")
+        self.api_key = (
+            api_key
+            or os.environ.get("KANI_AGENTIC_CLASSIFIER_API_KEY")
+            or os.environ.get("KANI_LLM_CLASSIFIER_API_KEY")
+            or os.environ.get("OPENROUTER_API_KEY", "")
+        )
+
+    def _call_llm(self, prompt: str, *, max_tokens: int = 8) -> str | None:
+        """Send a classification prompt and return normalized content."""
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": max_tokens,
+                    "temperature": 0.0,
+                },
+                timeout=2.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return (
+                data.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+                .upper()
+            )
+        except Exception as exc:
+            log.debug("Agentic classifier error: %s", exc)
+            return None
+
+    def classify(self, text: str) -> tuple[float, str] | None:
+        """Return (agentic_score, label) or None on failure."""
+        prompt = self._PROMPT_TEMPLATE.format(text=text[:500])
+        content = self._call_llm(prompt)
+        if content is None:
+            return None
+        if "NON_AGENTIC" in content:
+            return 0.0, "NON_AGENTIC"
+        if "AGENTIC" in content:
+            return 1.0, "AGENTIC"
+        log.warning("Agentic classifier returned unrecognised label: %r", content)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Scorer
+# ---------------------------------------------------------------------------
 
 
 class Scorer:
-    """15-dimension prompt scoring engine."""
+    """Model-first prompt classifier.
+
+    Pipeline:
+    1. Use the embedding classifier when it exists and is confident enough.
+    2. Escalate uncertain or unavailable cases to a cheap LLM classifier.
+    3. Fall back to a conservative default tier when both are unavailable.
+    """
 
     def __init__(
         self,
@@ -587,10 +417,12 @@ class Scorer:
         embedding_min_confidence: float = 0.65,
         use_llm_classifier: bool = True,
         llm_classifier: LLMClassifier | None = None,
+        agentic_classifier: AgenticClassifier | None = None,
+        agentic_embedding_model_dir: Path | None = None,
+        agentic_embedding_min_confidence: float = 0.7,
         enable_routing_log: bool = True,
     ) -> None:
         self.config = config or ScoringConfig()
-        self._encoder: tiktoken.Encoding | None = None
         self._embedding_clf: EmbeddingClassifier | None = None
         self._use_embedding = use_embedding
         self._embedding_model_dir = embedding_model_dir
@@ -598,154 +430,148 @@ class Scorer:
         self._embedding_loaded = False
         self._use_llm_classifier = use_llm_classifier
         self._llm_classifier = llm_classifier or LLMClassifier()
+        self._agentic_classifier = agentic_classifier
+        self._agentic_embedding_clf: AgenticEmbeddingClassifier | None = None
+        self._agentic_embedding_model_dir = agentic_embedding_model_dir
+        self._agentic_embedding_min_confidence = agentic_embedding_min_confidence
+        self._agentic_embedding_loaded = False
         self._enable_routing_log = enable_routing_log
 
-    @property
-    def encoder(self) -> tiktoken.Encoding:
-        if self._encoder is None:
-            self._encoder = tiktoken.get_encoding("cl100k_base")
-        return self._encoder
-
-    # -- helpers -----------------------------------------------------------
-
-    @staticmethod
-    def _keyword_score(
-        text: str,
-        keywords: list[str],
-        low_threshold: int,
-        high_threshold: int,
-        none_score: float,
-        low_score: float,
-        high_score: float,
-    ) -> tuple[float, int]:
-        """Count case-insensitive keyword matches and return (score, count)."""
-        lower = text.lower()
-        count = sum(1 for kw in keywords if kw.lower() in lower)
-        if count >= high_threshold:
-            return high_score, count
-        if count >= low_threshold:
-            return low_score, count
-        return none_score, count
-
-    @staticmethod
-    def _keyword_score_from_config(
-        text: str,
-        cfg: KeywordDimensionConfig,
-    ) -> tuple[float, int]:
-        return Scorer._keyword_score(
-            text,
-            cfg.keywords,
-            cfg.low_threshold,
-            cfg.high_threshold,
-            cfg.none_score,
-            cfg.low_score,
-            cfg.high_score,
-        )
-
-    def _estimate_tokens(self, text: str) -> int:
-        return len(self.encoder.encode(text))
-
-    @staticmethod
-    def _sigmoid_confidence(distance: float, steepness: float) -> float:
-        return 1.0 / (1.0 + math.exp(-steepness * distance))
-
-    # -- dimension scorers -------------------------------------------------
-
-    def _score_token_count(self, text: str) -> DimensionResult:
-        tokens = self._estimate_tokens(text)
-        if tokens < 50:
-            raw = -1.0
-        elif tokens > 500:
-            raw = 1.0
-        else:
-            raw = 0.0
-        w = self.config.weights["tokenCount"]
-        return DimensionResult("tokenCount", raw, w, raw * w, match_count=tokens)
-
-    def _score_keyword_dim(
-        self,
-        text: str,
-        name: str,
-        cfg: KeywordDimensionConfig,
-    ) -> DimensionResult:
-        raw, count = self._keyword_score_from_config(text, cfg)
-        w = self.config.weights[name]
-        return DimensionResult(name, raw, w, raw * w, match_count=count)
-
-    def _score_multi_step(self, text: str) -> DimensionResult:
-        hit = any(
-            re.search(pat, text, re.IGNORECASE | re.DOTALL)
-            for pat in self.config.multi_step_patterns
-        )
-        raw = 0.5 if hit else 0.0
-        w = self.config.weights["multiStepPatterns"]
-        return DimensionResult(
-            "multiStepPatterns", raw, w, raw * w, match_count=int(hit)
-        )
-
-    def _score_question_complexity(self, text: str) -> DimensionResult:
-        count = text.count("?")
-        raw = 0.5 if count > 3 else 0.0
-        w = self.config.weights["questionComplexity"]
-        return DimensionResult("questionComplexity", raw, w, raw * w, match_count=count)
-
-    def _score_agentic(self, text: str) -> DimensionResult:
-        lower = text.lower()
-        count = sum(1 for kw in self.config.agentic_keywords if kw.lower() in lower)
-        if count >= 4:
-            raw = 1.0
-        elif count >= 3:
-            raw = 0.6
-        elif count >= 1:
-            raw = 0.2
-        else:
-            raw = 0.0
-        w = self.config.weights["agenticTask"]
-        return DimensionResult("agenticTask", raw, w, raw * w, match_count=count)
-
-    # -- main classify -----------------------------------------------------
-
-    def _try_embedding_classify(self, text: str) -> ClassificationResult | None:
+    def _try_embedding_predict(self, text: str) -> tuple[Tier, float] | None:
         """Attempt embedding-based classification. Returns None on failure."""
         if not self._use_embedding:
             return None
-        # Lazy load once
         if not self._embedding_loaded:
             self._embedding_loaded = True
             self._embedding_clf = EmbeddingClassifier.load(self._embedding_model_dir)
         if self._embedding_clf is None:
             return None
         try:
-            tier, confidence = self._embedding_clf.predict(text)
-            if confidence < self._embedding_min_confidence:
-                log.debug(
-                    "Embedding confidence %.2f < threshold %.2f, falling back to rules",
-                    confidence,
-                    self._embedding_min_confidence,
-                )
-                return None
-            return ClassificationResult(
-                score=confidence,
-                tier=tier,
-                confidence=confidence,
-                signals={"method": {"raw": "embedding", "matches": 0}},
-                agentic_score=0.0,
-                dimensions=[],
-            )
-        except Exception as e:
-            log.warning("Embedding classification failed: %s", e)
+            return self._embedding_clf.predict(text)
+        except Exception as exc:
+            log.warning("Embedding classification failed: %s", exc)
             return None
 
-    def classify(self, text: str) -> ClassificationResult:
-        """Classify a prompt into a tier with confidence and dimension details.
+    @staticmethod
+    def _build_result(
+        *,
+        tier: Tier,
+        confidence: float,
+        method: str,
+        score: float | None = None,
+        agentic_score: float = 0.0,
+        extra_signals: dict[str, Any] | None = None,
+    ) -> ClassificationResult:
+        signals: dict[str, Any] = {"method": {"raw": method, "matches": 0}}
+        if extra_signals:
+            signals.update(extra_signals)
+        return ClassificationResult(
+            score=confidence if score is None else score,
+            tier=tier,
+            confidence=confidence,
+            signals=signals,
+            agentic_score=agentic_score,
+            dimensions=[],
+        )
 
-        Strategy:
-        1. Try embedding-based classifier.
-        2. Fall back to 15-dimension rules-based scorer.
-        3. If rules confidence < min_confidence, escalate to LLM classifier.
-        4. Log the decision via RoutingLogger.
-        """
+    def _try_agentic_embedding_predict(
+        self,
+        text: str,
+    ) -> tuple[float, str, float] | None:
+        """Attempt learned AGENTIC/NON_AGENTIC classification."""
+        if not self._agentic_embedding_loaded:
+            self._agentic_embedding_loaded = True
+            self._agentic_embedding_clf = AgenticEmbeddingClassifier.load(
+                self._agentic_embedding_model_dir
+            )
+        if self._agentic_embedding_clf is None:
+            return None
+        try:
+            return self._agentic_embedding_clf.predict(text)
+        except Exception as exc:
+            log.warning("Agentic embedding classification failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _set_agentic_result(
+        result: ClassificationResult,
+        *,
+        agentic_score: float,
+        label: str,
+        method: str,
+        extra_signals: dict[str, Any] | None = None,
+    ) -> ClassificationResult:
+        result.agentic_score = agentic_score
+        result.signals["agenticMethod"] = {"raw": method, "matches": 0}
+        result.signals["agenticLabel"] = {"raw": label, "matches": 0}
+        if extra_signals:
+            result.signals.update(extra_signals)
+        return result
+
+    def _apply_agentic_classification(
+        self,
+        text: str,
+        result: ClassificationResult,
+        *,
+        classify_agentic: bool,
+    ) -> ClassificationResult:
+        """Optionally enrich SIMPLE prompts with agentic classification."""
+        if not classify_agentic or result.tier != Tier.SIMPLE:
+            return result
+
+        agentic_embedding = self._try_agentic_embedding_predict(text)
+        if agentic_embedding is not None:
+            agentic_score, label, confidence = agentic_embedding
+            if confidence >= self._agentic_embedding_min_confidence:
+                return self._set_agentic_result(
+                    result,
+                    agentic_score=agentic_score,
+                    label=label,
+                    method="embedding",
+                )
+
+        if self._agentic_classifier is not None:
+            agentic_result = self._agentic_classifier.classify(text)
+            if agentic_result is not None:
+                agentic_score, label = agentic_result
+                extra_signals: dict[str, Any] | None = None
+                if agentic_embedding is not None:
+                    _, _, confidence = agentic_embedding
+                    extra_signals = {
+                        "agenticEmbeddingConfidence": {
+                            "raw": confidence,
+                            "matches": 0,
+                        }
+                    }
+                return self._set_agentic_result(
+                    result,
+                    agentic_score=agentic_score,
+                    label=label,
+                    method="llm",
+                    extra_signals=extra_signals,
+                )
+
+        if agentic_embedding is not None:
+            agentic_score, label, _ = agentic_embedding
+            return self._set_agentic_result(
+                result,
+                agentic_score=agentic_score,
+                label=label,
+                method="embedding-low-confidence",
+            )
+
+        return result
+
+    def classify(
+        self, text: str, *, classify_agentic: bool = False
+    ) -> ClassificationResult:
+        """Classify a prompt into a tier with confidence and metadata."""
         result = self._classify_internal(text)
+        result = self._apply_agentic_classification(
+            text,
+            result,
+            classify_agentic=classify_agentic,
+        )
 
         if self._enable_routing_log:
             from kani.logger import RoutingLogger
@@ -756,108 +582,47 @@ class Scorer:
 
     def _classify_internal(self, text: str) -> ClassificationResult:
         """Core classification pipeline."""
-        # --- 1. Attempt embedding-based classification ---
-        emb_result = self._try_embedding_classify(text)
-        if emb_result is not None:
-            return emb_result
+        embedding_prediction = self._try_embedding_predict(text)
+        if embedding_prediction is not None:
+            tier, confidence = embedding_prediction
+            if confidence >= self._embedding_min_confidence:
+                return self._build_result(
+                    tier=tier,
+                    confidence=confidence,
+                    method="embedding",
+                )
 
-        # --- 2. Rules-based scoring ---
-        rules_result = self._rules_classify(text)
-        rules_result.signals["method"] = {"raw": "rules", "matches": 0}
-
-        # --- 3. LLM escalation when confidence is low ---
-        if (
-            rules_result.confidence < self.config.min_confidence
-            and self._use_llm_classifier
-        ):
+        if self._use_llm_classifier:
             llm_result = self._llm_classifier.classify(text)
             if llm_result is not None:
                 tier, confidence = llm_result
-                rules_result.tier = tier
-                rules_result.confidence = confidence
-                rules_result.signals["method"] = {"raw": "llm", "matches": 0}
-            else:
-                # LLM failed; keep rules result but default tier to MEDIUM
-                rules_result.tier = Tier.MEDIUM
-                rules_result.signals["method"] = {"raw": "rules+fallback", "matches": 0}
+                extra_signals: dict[str, Any] | None = None
+                if embedding_prediction is not None:
+                    _, embedding_confidence = embedding_prediction
+                    extra_signals = {
+                        "embeddingConfidence": {
+                            "raw": embedding_confidence,
+                            "matches": 0,
+                        }
+                    }
+                return self._build_result(
+                    tier=tier,
+                    confidence=confidence,
+                    method="llm",
+                    extra_signals=extra_signals,
+                )
 
-        return rules_result
+        if embedding_prediction is not None:
+            tier, confidence = embedding_prediction
+            return self._build_result(
+                tier=tier,
+                confidence=confidence,
+                method="embedding-low-confidence",
+            )
 
-    def _rules_classify(self, text: str) -> ClassificationResult:
-        """15-dimension rule-based classification (original logic)."""
-        cfg = self.config
-
-        dims: list[DimensionResult] = [
-            self._score_token_count(text),
-            self._score_keyword_dim(text, "codePresence", cfg.code_presence),
-            self._score_keyword_dim(text, "reasoningMarkers", cfg.reasoning_markers),
-            self._score_keyword_dim(text, "technicalTerms", cfg.technical_terms),
-            self._score_keyword_dim(text, "creativeMarkers", cfg.creative_markers),
-            self._score_keyword_dim(text, "simpleIndicators", cfg.simple_indicators),
-            self._score_multi_step(text),
-            self._score_question_complexity(text),
-            self._score_keyword_dim(text, "imperativeVerbs", cfg.imperative_verbs),
-            self._score_keyword_dim(text, "constraintCount", cfg.constraint_count),
-            self._score_keyword_dim(text, "outputFormat", cfg.output_format),
-            self._score_keyword_dim(
-                text, "referenceComplexity", cfg.reference_complexity
-            ),
-            self._score_keyword_dim(
-                text, "negationComplexity", cfg.negation_complexity
-            ),
-            self._score_keyword_dim(text, "domainSpecificity", cfg.domain_specificity),
-            self._score_agentic(text),
-        ]
-
-        total_score = sum(d.weighted_score for d in dims)
-
-        # Determine reasoning match count for override
-        reasoning_dim = next(d for d in dims if d.name == "reasoningMarkers")
-        reasoning_match_count = reasoning_dim.match_count
-
-        # Agentic score from agentic dimension
-        agentic_dim = next(d for d in dims if d.name == "agenticTask")
-        agentic_score = agentic_dim.raw_score
-
-        # Build signals dict
-        signals: dict[str, Any] = {
-            d.name: {"raw": d.raw_score, "matches": d.match_count} for d in dims
-        }
-
-        # -- Tier determination --------------------------------------------
-        boundaries = [
-            cfg.simple_medium_boundary,
-            cfg.medium_complex_boundary,
-            cfg.complex_reasoning_boundary,
-        ]
-
-        if total_score <= cfg.simple_medium_boundary:
-            tier = Tier.SIMPLE
-        elif total_score <= cfg.medium_complex_boundary:
-            tier = Tier.MEDIUM
-        elif total_score <= cfg.complex_reasoning_boundary:
-            tier = Tier.COMPLEX
-        else:
-            tier = Tier.REASONING
-
-        # Confidence: distance from nearest boundary
-        min_dist = min(abs(total_score - b) for b in boundaries)
-        confidence = self._sigmoid_confidence(min_dist, cfg.sigmoid_steepness)
-
-        # Special override: reasoning keywords >= threshold
-        if reasoning_match_count >= cfg.reasoning_override_min_matches:
-            tier = Tier.REASONING
-            confidence = max(confidence, cfg.reasoning_override_min_confidence)
-
-        # Ambiguity guard: low confidence -> default to MEDIUM
-        if confidence < cfg.min_confidence:
-            tier = Tier.MEDIUM
-
-        return ClassificationResult(
-            score=total_score,
-            tier=tier,
-            confidence=confidence,
-            signals=signals,
-            agentic_score=agentic_score,
-            dimensions=dims,
+        return self._build_result(
+            tier=self.config.fallback_tier,
+            confidence=self.config.fallback_confidence,
+            method="default",
+            score=0.0,
         )
