@@ -80,6 +80,7 @@ class RoutingLogger:
 
             record: dict[str, Any] = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "prompt": text,
                 "prompt_preview": text[:200],
                 "tier": tier,
                 "score": score,
@@ -115,6 +116,7 @@ class RoutingLogger:
 
             record: dict[str, Any] = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "prompt": text,
                 "prompt_preview": text[:200],
                 "tier": result.tier.value,
                 "score": result.score,
