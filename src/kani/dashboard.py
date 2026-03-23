@@ -521,14 +521,67 @@ def ingest_stderr_proxy_logs() -> int:
 # ── Dashboard Queries ──────────────────────────────────────────────────────
 
 
-def _window_summary(conn: sqlite3.Connection, hours: int) -> dict[str, Any]:
+def _normalize_profiles(profiles: list[str] | tuple[str, ...] | None) -> list[str]:
+    if not profiles:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in profiles:
+        if item is None:
+            continue
+        for part in str(item).split(","):
+            profile = part.strip()
+            if not profile or profile in seen:
+                continue
+            seen.add(profile)
+            normalized.append(profile)
+    return normalized
+
+
+def _profile_filter_clause(
+    column: str, profiles: list[str] | tuple[str, ...] | None
+) -> tuple[str, list[str]]:
+    selected = _normalize_profiles(profiles)
+    if not selected:
+        return "", []
+    placeholders = ", ".join("?" for _ in selected)
+    return f" AND COALESCE({column}, '') IN ({placeholders})", selected
+
+
+def _available_profiles(conn: sqlite3.Connection) -> list[str]:
+    profiles: set[str] = set()
+    try:
+        cfg = load_config(strict=False)
+        profiles.update(cfg.profiles.keys())
+    except Exception:
+        pass
+
+    rows = conn.execute(
+        """
+        SELECT profile FROM routing_logs WHERE profile IS NOT NULL AND profile != ''
+        UNION
+        SELECT profile FROM execution_logs WHERE profile IS NOT NULL AND profile != ''
+        ORDER BY profile ASC
+        """
+    ).fetchall()
+    profiles.update(str(row[0]) for row in rows if row[0])
+    return sorted(profiles)
+
+
+def _window_summary(
+    conn: sqlite3.Connection,
+    hours: int,
+    profiles: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    profile_sql, profile_params = _profile_filter_clause("profile", profiles)
     routing_total = conn.execute(
-        "SELECT COUNT(*) AS count FROM routing_logs WHERE timestamp > ?",
-        (cutoff,),
+        f"SELECT COUNT(*) AS count FROM routing_logs WHERE timestamp > ?{profile_sql}",
+        (cutoff, *profile_params),
     ).fetchone()["count"]
     execution_row = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) AS execution_requests,
             COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
@@ -537,8 +590,9 @@ def _window_summary(conn: sqlite3.Connection, hours: int) -> dict[str, Any]:
             ROUND(AVG(elapsed_ms), 1) AS avg_elapsed_ms
         FROM execution_logs
         WHERE timestamp > ?
+        {profile_sql}
         """,
-        (cutoff,),
+        (cutoff, *profile_params),
     ).fetchone()
     execution_requests = execution_row["execution_requests"] or 0
     coverage = 0.0
@@ -560,11 +614,15 @@ def _window_summary(conn: sqlite3.Connection, hours: int) -> dict[str, Any]:
 
 
 def _model_usage_rows(
-    conn: sqlite3.Connection, hours: int, limit: int = 12
+    conn: sqlite3.Connection,
+    hours: int,
+    limit: int = 12,
+    profiles: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    profile_sql, profile_params = _profile_filter_clause("profile", profiles)
     rows = conn.execute(
-        """
+        f"""
         SELECT
             model,
             provider,
@@ -576,33 +634,39 @@ def _model_usage_rows(
         FROM execution_logs
         WHERE timestamp > ?
           AND model IS NOT NULL
+          {profile_sql}
         GROUP BY model, provider
         ORDER BY count DESC, total_tokens DESC, model ASC
         LIMIT ?
         """,
-        (cutoff, limit),
+        (cutoff, *profile_params, limit),
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def _daily_trends(conn: sqlite3.Connection, days: int = 30) -> list[dict[str, Any]]:
+def _daily_trends(
+    conn: sqlite3.Connection,
+    days: int = 30,
+    profiles: list[str] | tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
     start = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+    start_ts = datetime.combine(
+        start, datetime.min.time(), tzinfo=timezone.utc
+    ).isoformat()
+    profile_sql, profile_params = _profile_filter_clause("profile", profiles)
     routing_rows = conn.execute(
-        """
+        f"""
         SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS requests
         FROM routing_logs
         WHERE timestamp >= ?
+          {profile_sql}
         GROUP BY day
         ORDER BY day ASC
         """,
-        (
-            datetime.combine(
-                start, datetime.min.time(), tzinfo=timezone.utc
-            ).isoformat(),
-        ),
+        (start_ts, *profile_params),
     ).fetchall()
     execution_rows = conn.execute(
-        """
+        f"""
         SELECT
             substr(timestamp, 1, 10) AS day,
             COUNT(*) AS execution_requests,
@@ -611,14 +675,11 @@ def _daily_trends(conn: sqlite3.Connection, days: int = 30) -> list[dict[str, An
             COALESCE(SUM(total_tokens), 0) AS total_tokens
         FROM execution_logs
         WHERE timestamp >= ?
+          {profile_sql}
         GROUP BY day
         ORDER BY day ASC
         """,
-        (
-            datetime.combine(
-                start, datetime.min.time(), tzinfo=timezone.utc
-            ).isoformat(),
-        ),
+        (start_ts, *profile_params),
     ).fetchall()
 
     routing_map = {row["day"]: row["requests"] for row in routing_rows}
@@ -643,32 +704,43 @@ def _daily_trends(conn: sqlite3.Connection, days: int = 30) -> list[dict[str, An
     return data
 
 
-def get_dashboard_stats(hours: int = 24) -> dict[str, Any]:
+def get_dashboard_stats(
+    hours: int = 24,
+    profiles: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any]:
     """Get routing statistics for the dashboard."""
     _init_dashboard_db()
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    selected_profiles = _normalize_profiles(profiles)
 
     with sqlite3.connect(_DASHBOARD_DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        profile_sql, profile_params = _profile_filter_clause(
+            "profile", selected_profiles
+        )
+        available_profiles = sorted(
+            set(_available_profiles(conn)).union(selected_profiles)
+        )
 
         total = conn.execute(
-            "SELECT COUNT(*) AS count FROM routing_logs WHERE timestamp > ?",
-            (cutoff,),
+            f"SELECT COUNT(*) AS count FROM routing_logs WHERE timestamp > ?{profile_sql}",
+            (cutoff, *profile_params),
         ).fetchone()["count"]
 
         tier_dist = conn.execute(
-            """
+            f"""
             SELECT tier, COUNT(*) AS count
             FROM routing_logs
             WHERE timestamp > ?
+            {profile_sql}
             GROUP BY tier
             ORDER BY count DESC
             """,
-            (cutoff,),
+            (cutoff, *profile_params),
         ).fetchall()
 
         avg_scores = conn.execute(
-            """
+            f"""
             SELECT
                 tier,
                 ROUND(AVG(score), 4) AS avg_score,
@@ -676,14 +748,15 @@ def get_dashboard_stats(hours: int = 24) -> dict[str, Any]:
                 ROUND(AVG(agentic_score), 4) AS avg_agentic
             FROM routing_logs
             WHERE timestamp > ?
+            {profile_sql}
             GROUP BY tier
             ORDER BY avg_score DESC, tier ASC
             """,
-            (cutoff,),
+            (cutoff, *profile_params),
         ).fetchall()
 
         conf_dist = conn.execute(
-            """
+            f"""
             SELECT
                 CASE
                     WHEN confidence >= 0.9 THEN '90-100%'
@@ -694,39 +767,43 @@ def get_dashboard_stats(hours: int = 24) -> dict[str, Any]:
                 COUNT(*) AS count
             FROM routing_logs
             WHERE timestamp > ?
+            {profile_sql}
             GROUP BY bucket
             ORDER BY count DESC
             """,
-            (cutoff,),
+            (cutoff, *profile_params),
         ).fetchall()
 
         windows = {
-            "24h": _window_summary(conn, 24),
-            "7d": _window_summary(conn, 24 * 7),
-            "30d": _window_summary(conn, 24 * 30),
+            "24h": _window_summary(conn, 24, selected_profiles),
+            "7d": _window_summary(conn, 24 * 7, selected_profiles),
+            "30d": _window_summary(conn, 24 * 30, selected_profiles),
         }
 
         model_usage = {
-            "24h": _model_usage_rows(conn, 24),
-            "7d": _model_usage_rows(conn, 24 * 7),
-            "30d": _model_usage_rows(conn, 24 * 30),
+            "24h": _model_usage_rows(conn, 24, profiles=selected_profiles),
+            "7d": _model_usage_rows(conn, 24 * 7, profiles=selected_profiles),
+            "30d": _model_usage_rows(conn, 24 * 30, profiles=selected_profiles),
         }
 
-        daily = _daily_trends(conn, days=30)
+        daily = _daily_trends(conn, days=30, profiles=selected_profiles)
         last_updated_at = conn.execute(
-            """
+            f"""
             SELECT MAX(timestamp) AS ts
             FROM (
-                SELECT MAX(timestamp) AS timestamp FROM routing_logs
+                SELECT MAX(timestamp) AS timestamp FROM routing_logs WHERE timestamp > ?{profile_sql}
                 UNION ALL
-                SELECT MAX(timestamp) AS timestamp FROM execution_logs
+                SELECT MAX(timestamp) AS timestamp FROM execution_logs WHERE timestamp > ?{profile_sql}
             )
-            """
+            """,
+            [cutoff, *profile_params, cutoff, *profile_params],
         ).fetchone()["ts"]
 
         return {
             "period_hours": hours,
             "total_requests": total,
+            "available_profiles": available_profiles,
+            "selected_profiles": selected_profiles,
             "tier_distribution": {row["tier"]: row["count"] for row in tier_dist},
             "avg_scores_by_tier": [dict(row) for row in avg_scores],
             "confidence_distribution": {
@@ -928,6 +1005,41 @@ def _render_daily_table(rows: list[dict[str, Any]]) -> str:
     )
 
 
+def _render_profile_filters(
+    available_profiles: list[str], selected_profiles: list[str]
+) -> str:
+    if not available_profiles:
+        return ""
+
+    selected_set = set(selected_profiles)
+    show_all = not selected_set
+    chips: list[str] = []
+    for profile in available_profiles:
+        checked = show_all or profile in selected_set
+        checked_attr = " checked" if checked else ""
+        active_class = " active" if checked else ""
+        chips.append(
+            f'<label class="filter-chip{active_class}"><input type="checkbox" name="profiles" value="{escape(profile)}"{checked_attr}><span>{escape(profile)}</span></label>'
+        )
+
+    selection_label = "All profiles" if show_all else ", ".join(selected_profiles)
+    clear_link = (
+        '<a class="filter-clear" href="/dashboard">Clear filter</a>'
+        if not show_all
+        else ""
+    )
+    return (
+        '<form class="filter-form card" method="get" action="/dashboard">'
+        '<div class="filter-head">'
+        '<div><h2>Profiles</h2><div class="meta">Filter dashboard statistics by one or more routing profiles.</div></div>'
+        f'<div class="filter-actions"><button type="submit">Apply filters</button>{clear_link}</div>'
+        "</div>"
+        f'<div class="filter-chip-group">{"".join(chips)}</div>'
+        f'<div class="filter-selection">Showing: <strong>{escape(selection_label)}</strong></div>'
+        "</form>"
+    )
+
+
 def render_dashboard_html(stats: dict[str, Any]) -> str:
     """Render a simple HTML dashboard."""
     tier_chart_items = [
@@ -975,6 +1087,12 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
     last_updated_at = stats.get("last_updated_at")
     last_updated_label = _fmt_last_updated(last_updated_at)
     last_updated_relative = _fmt_relative_time(last_updated_at)
+    available_profiles = list(stats.get("available_profiles", []))
+    selected_profiles = list(stats.get("selected_profiles", []))
+    filter_summary = (
+        "All profiles" if not selected_profiles else ", ".join(selected_profiles)
+    )
+    filter_html = _render_profile_filters(available_profiles, selected_profiles)
 
     parts = [
         "<!DOCTYPE html>",
@@ -1001,6 +1119,18 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         "        .status-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 0 0 18px; color: #667085; font-size: 14px; }",
         "        .status-pill { display: inline-flex; gap: 8px; align-items: center; padding: 8px 12px; border-radius: 999px; background: #eef4ff; color: #175cd3; font-weight: 600; }",
         "        .status-pill strong { color: #101828; }",
+        "        .filter-form { margin: 0 0 20px; }",
+        "        .filter-head { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }",
+        "        .filter-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }",
+        "        .filter-actions button { border: 0; border-radius: 10px; background: #175cd3; color: white; padding: 10px 14px; font-weight: 600; cursor: pointer; }",
+        "        .filter-actions button:hover { background: #1849a9; }",
+        "        .filter-clear { color: #175cd3; text-decoration: none; font-weight: 600; }",
+        "        .filter-clear:hover { text-decoration: underline; }",
+        "        .filter-chip-group { display: flex; flex-wrap: wrap; gap: 10px; }",
+        "        .filter-chip { display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 999px; border: 1px solid #d0d5dd; background: #fff; color: #344054; cursor: pointer; }",
+        "        .filter-chip.active { border-color: #b2ddff; background: #eff8ff; color: #175cd3; }",
+        "        .filter-chip input { margin: 0; }",
+        "        .filter-selection { margin-top: 14px; color: #667085; font-size: 14px; }",
         "        .section { margin: 28px 0; }",
         "        .section h2 { margin: 0 0 14px; font-size: 22px; line-height: 1.3; }",
         "        .section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }",
@@ -1043,7 +1173,8 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         '<div class="container">',
         "    <h1>🦀 Kani Dashboard</h1>",
         '    <div class="subtitle">Routing tiers + actual model/provider usage + token trends</div>',
-        f'    <div class="status-row"><div class="status-pill">Updated <strong>{escape(last_updated_relative)}</strong></div><div>Last update: {escape(last_updated_label)}</div></div>',
+        f'    <div class="status-row"><div class="status-pill">Updated <strong>{escape(last_updated_relative)}</strong></div><div>Last update: {escape(last_updated_label)}</div><div>Profiles: <strong>{escape(filter_summary)}</strong></div></div>',
+        filter_html,
         '    <div class="cards">',
         _render_window_cards(stats.get("windows", {})),
         "    </div>",

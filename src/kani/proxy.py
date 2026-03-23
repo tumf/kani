@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -517,23 +517,25 @@ async def route_debug(request: Request):
 
 
 @app.get("/dashboard")
-async def dashboard():
+async def dashboard(profiles: list[str] | None = Query(default=None)):
     """HTML dashboard showing routing analytics."""
     ingest_jsonl_logs(days=30)
     execution_ingested = ingest_execution_logs(days=30)
     if execution_ingested == 0:
         ingest_stderr_proxy_logs()
 
-    stats = get_dashboard_stats(hours=24)
+    stats = get_dashboard_stats(hours=24, profiles=profiles)
     html = render_dashboard_html(stats)
     return HTMLResponse(content=html)
 
 
 @app.get("/dashboard/stats")
-async def dashboard_stats(hours: int = 24):
+async def dashboard_stats(
+    hours: int = 24, profiles: list[str] | None = Query(default=None)
+):
     """JSON endpoint for dashboard stats."""
     ingest_jsonl_logs(days=max(1, hours // 24))
     execution_ingested = ingest_execution_logs(days=30)
     if execution_ingested == 0:
         ingest_stderr_proxy_logs()
-    return get_dashboard_stats(hours=hours)
+    return get_dashboard_stats(hours=hours, profiles=profiles)
