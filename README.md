@@ -143,6 +143,8 @@ curl http://localhost:18420/v1/chat/completions \
 
 ## Routing profiles
 
+> Note: The routing profiles below are sample/reference defaults. Treat them as examples — you should tune the actual profile names, strategies, and model mappings to match your own workload and cost/quality goals.
+
 | Profile | Strategy | Best for |
 |---------|----------|----------|
 | `kani/auto` | Balanced cost/quality (default) | General use |
