@@ -4,7 +4,7 @@
 
 ```
 src/kani/
-├── scorer.py    # 15-dimension scoring + embedding + LLM classifier
+├── scorer.py    # model-first scoring (embedding + LLM fallback)
 ├── router.py    # Tier → model+provider mapping
 ├── proxy.py     # FastAPI OpenAI-compatible server
 ├── config.py    # YAML config loading, env var resolution
@@ -12,39 +12,21 @@ src/kani/
 └── cli.py       # Click CLI
 ```
 
-## Scoring dimensions
-
-| # | Dimension | Weight | What it detects |
-|---|-----------|--------|-----------------|
-| 1 | tokenCount | 0.08 | Prompt length via tiktoken |
-| 2 | codePresence | 0.15 | `function`, `class`, `import`, `` ``` `` etc. |
-| 3 | reasoningMarkers | 0.18 | `prove`, `theorem`, `step by step` etc. |
-| 4 | technicalTerms | 0.10 | `algorithm`, `kubernetes`, `architecture` etc. |
-| 5 | creativeMarkers | 0.05 | `story`, `poem`, `brainstorm` etc. |
-| 6 | simpleIndicators | 0.02 | `what is`, `hello`, `translate` (negative weight) |
-| 7 | multiStepPatterns | 0.12 | `first...then`, `step 1`, numbered lists |
-| 8 | questionComplexity | 0.05 | Multiple `?` in prompt |
-| 9 | imperativeVerbs | 0.03 | `build`, `implement`, `deploy` etc. |
-| 10 | constraintCount | 0.04 | `must`, `ensure`, `require` etc. |
-| 11 | outputFormat | 0.03 | `json`, `csv`, `markdown` etc. |
-| 12 | referenceComplexity | 0.02 | `according to`, `based on` etc. |
-| 13 | negationComplexity | 0.01 | `not`, `without`, `except` etc. |
-| 14 | domainSpecificity | 0.02 | `medical`, `legal`, `financial` etc. |
-| 15 | agenticTask | 0.04 | `read file`, `execute`, `deploy`, `debug` etc. |
-
-Multilingual — English and Japanese keywords included.
-
 ## Classification pipeline
 
 3-layer cascade:
 
-1. **Embedding classifier** — pre-trained sklearn model (if available)
-2. **Rules engine** — 15-dimension weighted scoring (ClawRouter port, MIT)
-3. **LLM-as-judge** — cheap LLM escalation when rules confidence < 0.7
+1. **Embedding classifier** — pre-trained sklearn model for tier routing (primary path)
+2. **LLM-as-judge** — cheap fallback for uncertain or unavailable tier decisions
+3. **Agentic embedding classifier** — for the `agentic` profile, SIMPLE prompts get a learned AGENTIC / NON_AGENTIC pass when `models/agentic_classifier.pkl` exists
+4. **Agentic LLM fallback** — only used when the learned agentic classifier is uncertain or unavailable
+5. **Conservative default** — fall back to `MEDIUM` when neither classifier can decide
+
+The scorer intentionally avoids hand-maintained keyword tables. If routing quality is off, prefer improving training data, retraining the embedding model, or tightening the LLM classifier prompt instead of adding heuristics.
 
 ## LLM escalation
 
-When the rules engine isn't confident (< 0.7), kani asks a cheap LLM:
+When the learned tier classifier isn't confident enough, kani asks a cheap LLM:
 
 | Env var | Default | Description |
 |---------|---------|-------------|
@@ -59,10 +41,15 @@ Cost: ~$0.0001 per escalation. Timeout: 2s.
 All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl`:
 
 ```json
-{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.1, "confidence": 0.85, "method": "rules", "agentic_score": 0.0}
+{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.8, "confidence": 0.8, "method": "llm", "agentic_score": 0.0}
 ```
 
-Future: train an embedding classifier from these logs to replace the heuristic rules.
+Use `uv run python scripts/build_agentic_dataset.py --output data/agentic_training_prompts.json` to extract binary AGENTIC / NON_AGENTIC examples from routing logs.
+The extractor only keeps records with explicit agentic evidence, prefers full `prompt` when present, and deduplicates by prompt.
+
+Use `uv run python scripts/train_agentic_classifier.py --data data/agentic_training_prompts.json --output models` to train an embedding-based binary agentic classifier and save `models/agentic_classifier.pkl`.
+
+At runtime, kani loads `models/agentic_classifier.pkl` automatically for the `agentic` profile. High-confidence learned predictions are used directly; low-confidence cases fall back to the cheap LLM judge.
 
 ## Response headers
 

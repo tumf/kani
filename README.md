@@ -14,42 +14,30 @@ OpenAI API-compatible proxy — drop in as a base URL and let kani pick the righ
 ## How it works
 
 ```
-Request → 15-Dimension Scorer → Tier → Model Selection → Upstream Provider
-                                  │
-                  ┌────────────┬──┴──────────┬──────────────┐
-                SIMPLE       MEDIUM       COMPLEX       REASONING
-            gemini-flash    kimi-k2.5   gemini-pro    grok-reasoning
+Request → Embedding Classifier → Tier → Model Selection → Upstream Provider
+                 │
+                 └─ uncertain / unavailable → LLM Classifier → conservative default
 ```
 
 **Classification pipeline (3 layers):**
 
-1. **Embedding classifier** — pre-trained sklearn model (if available)
-2. **Rules engine** — 15-dimension weighted scoring (ClawRouter port, MIT)
-3. **LLM-as-judge** — cheap LLM escalation when rules confidence < 0.7
+1. **Embedding classifier** — pre-trained sklearn model (primary path)
+2. **LLM-as-judge** — cheap fallback for uncertain or unavailable embedding decisions
+3. **Agentic classifier** — for the `agentic` profile, SIMPLE prompts can be re-labeled as action-oriented before routing
+4. **Conservative default** — fall back to `MEDIUM` when neither classifier can decide
 
 Every request is logged to `$XDG_STATE_HOME/kani/log/` (default: `~/.local/state/kani/log/`) as training data for future model improvement.
 
-## Scoring dimensions
+## Scoring approach
 
-| # | Dimension | Weight | What it detects |
-|---|-----------|--------|-----------------|
-| 1 | tokenCount | 0.08 | Prompt length via tiktoken |
-| 2 | codePresence | 0.15 | `function`, `class`, `import`, `` ``` `` etc. |
-| 3 | reasoningMarkers | 0.18 | `prove`, `theorem`, `step by step` etc. |
-| 4 | technicalTerms | 0.10 | `algorithm`, `kubernetes`, `architecture` etc. |
-| 5 | creativeMarkers | 0.05 | `story`, `poem`, `brainstorm` etc. |
-| 6 | simpleIndicators | 0.02 | `what is`, `hello`, `translate` (negative weight) |
-| 7 | multiStepPatterns | 0.12 | `first...then`, `step 1`, numbered lists |
-| 8 | questionComplexity | 0.05 | Multiple `?` in prompt |
-| 9 | imperativeVerbs | 0.03 | `build`, `implement`, `deploy` etc. |
-| 10 | constraintCount | 0.04 | `must`, `ensure`, `require` etc. |
-| 11 | outputFormat | 0.03 | `json`, `csv`, `markdown` etc. |
-| 12 | referenceComplexity | 0.02 | `according to`, `based on` etc. |
-| 13 | negationComplexity | 0.01 | `not`, `without`, `except` etc. |
-| 14 | domainSpecificity | 0.02 | `medical`, `legal`, `financial` etc. |
-| 15 | agenticTask | 0.04 | `read file`, `execute`, `deploy`, `debug` etc. |
+kani no longer relies on hand-maintained keyword lists inside `scorer.py`.
+The scorer is now model-first:
 
-Multilingual — English and Japanese keywords included.
+- use the trained embedding classifier when confidence is high enough
+- escalate ambiguous cases to a cheap LLM classifier
+- return a conservative default tier instead of brittle keyword heuristics
+
+This makes routing behavior easier to improve with data, because changes come from retraining or prompt tuning rather than editing keyword tables.
 
 ## Quick start
 
@@ -213,7 +201,7 @@ llm_classifier:
 
 ## LLM escalation
 
-When the rules engine isn't confident (< 0.7), kani asks a cheap LLM.
+When the embedding classifier is uncertain or unavailable, kani asks a cheap LLM.
 
 **Preferred: configure via `config.yaml`** (see `llm_classifier` section above).
 
@@ -232,10 +220,31 @@ Cost: ~$0.0001 per escalation. Timeout: 2s.
 All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` (default: `~/.local/state/kani/log/`):
 
 ```json
-{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.1, "confidence": 0.85, "method": "rules", "agentic_score": 0.0}
+{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.8, "confidence": 0.8, "method": "llm", "agentic_score": 0.0}
 ```
 
-Future: train an embedding classifier from these logs to replace the heuristic rules.
+Use these logs to expand training data, retrain the embedding classifier, and audit where the LLM fallback is still firing too often.
+
+To bootstrap binary AGENTIC / NON_AGENTIC labels from routing logs:
+
+```bash
+uv run python scripts/build_agentic_dataset.py \
+  --output data/agentic_training_prompts.json
+```
+
+This script reads `routing-*.jsonl`, extracts records with explicit `agenticLabel` evidence, deduplicates by prompt, and writes a JSON dataset for future agentic-classifier training.
+Newer logs include the full `prompt` plus a truncated `prompt_preview`, and the extractor prefers the full prompt automatically.
+
+To train an embedding-based agentic classifier from that dataset:
+
+```bash
+uv run python scripts/train_agentic_classifier.py \
+  --data data/agentic_training_prompts.json \
+  --output models
+```
+
+This writes `models/agentic_classifier.pkl` with the sklearn classifier, label encoder, embedding metadata, and class distribution.
+When that file exists, kani automatically uses it at runtime for the `agentic` profile: high-confidence learned predictions are applied directly, and only low-confidence cases fall back to the cheap LLM judge.
 
 ## API key authentication
 
@@ -288,7 +297,7 @@ kani keys remove <name|prefix>
 
 ```
 src/kani/
-├── scorer.py    # 15-dimension scoring + embedding + LLM classifier
+├── scorer.py    # model-first scoring (embedding + LLM fallback)
 ├── router.py    # Tier → model+provider mapping
 ├── proxy.py     # FastAPI OpenAI-compatible server
 ├── config.py    # YAML config loading, env var resolution

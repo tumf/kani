@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick test for embedding+rules scorer integration."""
+"""Quick test for model-first scorer integration."""
 
 from kani.scorer import Scorer
 
@@ -14,7 +14,7 @@ tests = [
 ]
 for t in tests:
     r = s.classify(t)
-    method = r.signals.get("method", {}).get("raw", "rules")
+    method = r.signals.get("method", {}).get("raw", "default")
     print(
         f"[{r.tier.value:9s}] conf={r.confidence:.3f} method={method!s:9s} | {t[:70]}"
     )
