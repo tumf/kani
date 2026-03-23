@@ -225,15 +225,34 @@ All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` 
 
 Use these logs to expand training data, retrain the embedding classifier, and audit where the LLM fallback is still firing too often.
 
-To bootstrap binary AGENTIC / NON_AGENTIC labels from routing logs:
+If your routing logs already contain explicit `agenticLabel` evidence, build a strict dataset directly:
 
 ```bash
 uv run python scripts/build_agentic_dataset.py \
   --output data/agentic_training_prompts.json
 ```
 
-This script reads `routing-*.jsonl`, extracts records with explicit `agenticLabel` evidence, deduplicates by prompt, and writes a JSON dataset for future agentic-classifier training.
+This extractor only keeps records with explicit agentic evidence, deduplicates by prompt, and writes a clean JSON dataset for future agentic-classifier training.
 Newer logs include the full `prompt` plus a truncated `prompt_preview`, and the extractor prefers the full prompt automatically.
+
+If logs are still sparse and you need an initial bootstrap dataset, use the cheap LLM judge to label unlabeled prompts from the same logs:
+
+```bash
+uv run python scripts/bootstrap_agentic_dataset.py \
+  --output data/agentic_training_prompts.json
+```
+
+The bootstrap flow merges four sources into one training file:
+- explicit labels already present in routing logs
+- built-in seed examples
+- optional manual overrides / exclude lists
+- cheap-LLM labels for remaining prompts
+
+Useful options:
+- `--seed-file seeds.json` — extra `{prompt, label}` examples
+- `--overrides-file overrides.json` — force labels for known prompts
+- `--exclude-file excludes.txt` — skip shorthand/noisy prompts like `.` or `y`
+- `--model`, `--base-url`, `--api-key` — point the bootstrap judge at a specific classifier endpoint
 
 To train an embedding-based agentic classifier from that dataset:
 

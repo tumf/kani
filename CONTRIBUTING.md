@@ -44,8 +44,10 @@ All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl`:
 {"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.8, "confidence": 0.8, "method": "llm", "agentic_score": 0.0}
 ```
 
-Use `uv run python scripts/build_agentic_dataset.py --output data/agentic_training_prompts.json` to extract binary AGENTIC / NON_AGENTIC examples from routing logs.
+Use `uv run python scripts/build_agentic_dataset.py --output data/agentic_training_prompts.json` to extract binary AGENTIC / NON_AGENTIC examples from routing logs when explicit `agenticLabel` evidence is already present.
 The extractor only keeps records with explicit agentic evidence, prefers full `prompt` when present, and deduplicates by prompt.
+
+If the logs are still sparse, use `uv run python scripts/bootstrap_agentic_dataset.py --output data/agentic_training_prompts.json` to bootstrap labels from four sources: explicit routing-log labels, built-in seed examples, optional overrides/exclude files, and cheap-LLM classifications for the remaining prompts.
 
 Use `uv run python scripts/train_agentic_classifier.py --data data/agentic_training_prompts.json --output models` to train an embedding-based binary agentic classifier and save `models/agentic_classifier.pkl`.
 
