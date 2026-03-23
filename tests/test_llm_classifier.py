@@ -9,144 +9,101 @@ from unittest.mock import MagicMock, patch
 
 from kani.logger import RoutingLogger
 from kani.scorer import (
+    AgenticClassifier,
     ClassificationResult,
     LLMClassifier,
     Scorer,
-    ScoringConfig,
     Tier,
 )
 
 
 # ---------------------------------------------------------------------------
-# LLM classifier NOT called when rules confidence is high
+# Model-first scorer / LLM escalation
 # ---------------------------------------------------------------------------
 
 
-class TestLLMClassifierNotCalledHighConfidence:
-    def test_high_confidence_skips_llm(self) -> None:
-        """When rules-based confidence >= 0.7, LLM should NOT be called."""
+class TestLLMClassifierUsage:
+    def test_high_confidence_embedding_skips_llm(self) -> None:
+        """When embedding confidence is high enough, LLM should NOT be called."""
         mock_llm = MagicMock(spec=LLMClassifier)
         mock_llm.classify = MagicMock(return_value=(Tier.COMPLEX, 0.8))
 
-        scorer = Scorer(
-            use_embedding=False,
-            use_llm_classifier=True,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
+        embedding = MagicMock()
+        embedding.predict.return_value = (Tier.SIMPLE, 0.91)
 
-        # "Hello" is a SIMPLE prompt with high confidence
-        result = scorer.classify("Hello")
+        with patch("kani.scorer.EmbeddingClassifier.load", return_value=embedding):
+            scorer = Scorer(
+                use_embedding=True,
+                use_llm_classifier=True,
+                llm_classifier=mock_llm,
+                enable_routing_log=False,
+            )
+            result = scorer.classify("Hello")
+
         assert result.tier == Tier.SIMPLE
+        assert result.signals["method"]["raw"] == "embedding"
         mock_llm.classify.assert_not_called()
 
-    def test_reasoning_override_skips_llm(self) -> None:
-        """Reasoning override produces confidence >= 0.85, should skip LLM."""
-        mock_llm = MagicMock(spec=LLMClassifier)
-        mock_llm.classify = MagicMock(return_value=(Tier.MEDIUM, 0.8))
-
-        scorer = Scorer(
-            use_embedding=False,
-            use_llm_classifier=True,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
-
-        result = scorer.classify(
-            "Prove the theorem formally using mathematical induction."
-        )
-        assert result.tier == Tier.REASONING
-        mock_llm.classify.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# LLM classifier IS called when rules confidence is low
-# ---------------------------------------------------------------------------
-
-
-class TestLLMClassifierCalledLowConfidence:
-    def test_low_confidence_calls_llm(self) -> None:
-        """When rules confidence < 0.7, LLM classifier should be called."""
+    def test_low_confidence_embedding_calls_llm(self) -> None:
+        """When embedding confidence is low, LLM classifier should be called."""
         mock_llm = MagicMock(spec=LLMClassifier)
         mock_llm.classify = MagicMock(return_value=(Tier.COMPLEX, 0.8))
 
-        # Use a config that makes it easy to get low confidence
-        # An ambiguous prompt near a boundary should have low confidence
-        scorer = Scorer(
-            use_embedding=False,
-            use_llm_classifier=True,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
+        embedding = MagicMock()
+        embedding.predict.return_value = (Tier.MEDIUM, 0.41)
 
-        # "Build a system" - moderate prompt that lands near a boundary
-        # with low confidence. We check if LLM was called.
-        result = scorer.classify("Build a system")
+        with patch("kani.scorer.EmbeddingClassifier.load", return_value=embedding):
+            scorer = Scorer(
+                use_embedding=True,
+                use_llm_classifier=True,
+                llm_classifier=mock_llm,
+                enable_routing_log=False,
+            )
+            result = scorer.classify("Build a system")
 
-        # If the rules confidence was < 0.7, LLM should have been called
-        if mock_llm.classify.called:
-            assert result.tier == Tier.COMPLEX
-            assert result.confidence == 0.8
-            method = result.signals.get("method", {})
-            assert method.get("raw") == "llm"
-        # If rules confidence was >= 0.7, that's fine too - the test
-        # verifies the mechanism works
-
-    def test_low_confidence_llm_returns_result(self) -> None:
-        """Force low confidence via config and verify LLM result is used."""
-        mock_llm = MagicMock(spec=LLMClassifier)
-        mock_llm.classify = MagicMock(return_value=(Tier.REASONING, 0.8))
-
-        # Set min_confidence very high so rules almost always has "low" confidence
-        config = ScoringConfig(min_confidence=0.99)
-        scorer = Scorer(
-            config=config,
-            use_embedding=False,
-            use_llm_classifier=True,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
-
-        result = scorer.classify("What is quantum computing?")
-        # LLM should have been called since confidence < 0.99 is almost certain
         mock_llm.classify.assert_called_once()
-        assert result.tier == Tier.REASONING
+        assert result.tier == Tier.COMPLEX
         assert result.confidence == 0.8
         assert result.signals["method"]["raw"] == "llm"
+        assert result.signals["embeddingConfidence"]["raw"] == 0.41
 
-    def test_low_confidence_llm_fails_fallback_to_medium(self) -> None:
-        """When LLM fails (returns None), tier defaults to MEDIUM."""
+    def test_llm_failure_falls_back_to_low_confidence_embedding(self) -> None:
+        """If LLM fails, keep the embedding prediction instead of using rules."""
         mock_llm = MagicMock(spec=LLMClassifier)
         mock_llm.classify = MagicMock(return_value=None)
 
-        config = ScoringConfig(min_confidence=0.99)
-        scorer = Scorer(
-            config=config,
-            use_embedding=False,
-            use_llm_classifier=True,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
+        embedding = MagicMock()
+        embedding.predict.return_value = (Tier.COMPLEX, 0.49)
 
-        result = scorer.classify("What is quantum computing?")
+        with patch("kani.scorer.EmbeddingClassifier.load", return_value=embedding):
+            scorer = Scorer(
+                use_embedding=True,
+                use_llm_classifier=True,
+                llm_classifier=mock_llm,
+                enable_routing_log=False,
+            )
+            result = scorer.classify("Ambiguous prompt")
+
         mock_llm.classify.assert_called_once()
-        assert result.tier == Tier.MEDIUM
-        assert result.signals["method"]["raw"] == "rules+fallback"
+        assert result.tier == Tier.COMPLEX
+        assert result.confidence == 0.49
+        assert result.signals["method"]["raw"] == "embedding-low-confidence"
 
     def test_llm_disabled_skips_call(self) -> None:
         """When use_llm_classifier=False, LLM should never be called."""
         mock_llm = MagicMock(spec=LLMClassifier)
+        embedding = MagicMock()
+        embedding.predict.return_value = (Tier.MEDIUM, 0.45)
 
-        config = ScoringConfig(min_confidence=0.99)
-        scorer = Scorer(
-            config=config,
-            use_embedding=False,
-            use_llm_classifier=False,
-            llm_classifier=mock_llm,
-            enable_routing_log=False,
-        )
+        with patch("kani.scorer.EmbeddingClassifier.load", return_value=embedding):
+            scorer = Scorer(
+                use_embedding=True,
+                use_llm_classifier=False,
+                llm_classifier=mock_llm,
+                enable_routing_log=False,
+            )
+            scorer.classify("What is quantum computing?")
 
-        scorer.classify("What is quantum computing?")
         mock_llm.classify.assert_not_called()
 
 
@@ -161,7 +118,7 @@ class TestLLMClassifierUnit:
         clf = LLMClassifier(
             model="test-model",
             base_url="http://localhost:9999",
-            api_key="test-key",
+            api_key="***",
         )
 
         mock_response = MagicMock()
@@ -185,7 +142,7 @@ class TestLLMClassifierUnit:
         clf = LLMClassifier(
             model="test-model",
             base_url="http://localhost:9999",
-            api_key="test-key",
+            api_key="***",
         )
 
         with patch("kani.scorer.httpx.post", side_effect=Exception("timeout")):
@@ -198,7 +155,7 @@ class TestLLMClassifierUnit:
         clf = LLMClassifier(
             model="test-model",
             base_url="http://localhost:9999",
-            api_key="test-key",
+            api_key="***",
         )
 
         mock_response = MagicMock()
@@ -217,7 +174,7 @@ class TestLLMClassifierUnit:
         clf = LLMClassifier(
             model="test-model",
             base_url="http://localhost:9999",
-            api_key="test-key",
+            api_key="***",
         )
 
         long_text = "x" * 1000
@@ -231,7 +188,6 @@ class TestLLMClassifierUnit:
         with patch("kani.scorer.httpx.post", return_value=mock_response) as mock_post:
             clf.classify(long_text)
 
-        # Check that the prompt in the request contains only 500 chars of the text
         call_args = mock_post.call_args
         messages = call_args.kwargs.get("json", call_args[1].get("json", {}))[
             "messages"
@@ -239,6 +195,44 @@ class TestLLMClassifierUnit:
         user_content = messages[0]["content"]
         assert "x" * 500 in user_content
         assert "x" * 501 not in user_content
+
+
+class TestAgenticClassifierUnit:
+    def test_agentic_label_maps_to_one(self) -> None:
+        clf = AgenticClassifier(
+            model="test-model",
+            base_url="http://localhost:9999",
+            api_key="***",
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "AGENTIC"}}]
+        }
+
+        with patch("kani.scorer.httpx.post", return_value=mock_response):
+            result = clf.classify("edit the file and run tests")
+
+        assert result == (1.0, "AGENTIC")
+
+    def test_non_agentic_label_maps_to_zero(self) -> None:
+        clf = AgenticClassifier(
+            model="test-model",
+            base_url="http://localhost:9999",
+            api_key="***",
+        )
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "NON_AGENTIC"}}]
+        }
+
+        with patch("kani.scorer.httpx.post", return_value=mock_response):
+            result = clf.classify("explain the architecture")
+
+        assert result == (0.0, "NON_AGENTIC")
 
 
 # ---------------------------------------------------------------------------
@@ -257,21 +251,17 @@ class TestRoutingLogger:
                 score=0.42,
                 tier=Tier.MEDIUM,
                 confidence=0.75,
-                signals={"method": {"raw": "rules", "matches": 0}},
+                signals={"method": {"raw": "default", "matches": 0}},
                 agentic_score=0.1,
                 dimensions=[],
             )
 
             RoutingLogger.log("Hello world test prompt", result)
 
-            # Check that log directory was created
             assert log_dir.exists()
-
-            # Find the log file
             log_files = list(log_dir.glob("routing-*.jsonl"))
             assert len(log_files) == 1
 
-            # Parse the log entry
             with open(log_files[0]) as f:
                 lines = f.readlines()
             assert len(lines) == 1
@@ -280,12 +270,12 @@ class TestRoutingLogger:
             assert entry["tier"] == "MEDIUM"
             assert entry["score"] == 0.42
             assert entry["confidence"] == 0.75
-            assert entry["method"] == "rules"
+            assert entry["method"] == "default"
+            assert entry["prompt"] == "Hello world test prompt"
             assert entry["prompt_preview"] == "Hello world test prompt"
             assert entry["agentic_score"] == 0.1
             assert "timestamp" in entry
 
-            # Reset log dir
             RoutingLogger.set_log_dir(Path.home() / ".kani" / "logs")
 
     def test_multiple_logs_append(self) -> None:
@@ -318,7 +308,6 @@ class TestRoutingLogger:
             assert entry1["prompt_preview"] == "First prompt"
             assert entry2["prompt_preview"] == "Second prompt"
 
-            # Reset log dir
             RoutingLogger.set_log_dir(Path.home() / ".kani" / "logs")
 
     def test_prompt_preview_truncated(self) -> None:
@@ -332,7 +321,7 @@ class TestRoutingLogger:
                 score=0.1,
                 tier=Tier.SIMPLE,
                 confidence=0.95,
-                signals={"method": {"raw": "rules", "matches": 0}},
+                signals={"method": {"raw": "embedding", "matches": 0}},
                 agentic_score=0.0,
                 dimensions=[],
             )
@@ -343,7 +332,7 @@ class TestRoutingLogger:
             with open(log_files[0]) as f:
                 entry = json.loads(f.readline())
 
+            assert entry["prompt"] == long_prompt
             assert len(entry["prompt_preview"]) == 200
 
-            # Reset log dir
             RoutingLogger.set_log_dir(Path.home() / ".kani" / "logs")
