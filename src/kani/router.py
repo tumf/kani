@@ -105,12 +105,17 @@ class Router:
         prompt, system_prompt = self._extract_prompts(messages)
 
         # --- Run scorer ---
-        classification = self._classify(prompt, system_prompt, messages)
+        classification = self._classify(
+            prompt, system_prompt, messages, profile=profile
+        )
 
         tier: str = classification.get("tier") or _DEFAULT_TIER
         score: float = classification.get("score", 0.5)
         confidence: float = classification.get("confidence", 0.5)
         signals: list[str] = classification.get("signals", [])
+        signal_details: dict[str, Any] | list[str] = classification.get(
+            "signal_details", signals
+        )
         agentic_score: float = classification.get("agentic_score", 0.0)
 
         # --- Override tier for agentic profile if agentic_score is high ---
@@ -158,7 +163,7 @@ class Router:
                 tier=tier,
                 score=score,
                 confidence=confidence,
-                signals=signals,
+                signals=signal_details,
                 agentic_score=agentic_score,
                 model=model_id,
                 provider=provider_name,
@@ -252,37 +257,51 @@ class Router:
         prompt: str,
         system_prompt: str,
         messages: list[dict[str, Any]],
+        *,
+        profile: str,
     ) -> dict[str, Any]:
         """Run the scorer to classify the prompt complexity.
 
         Returns a dict with keys: score, tier, confidence, signals, agentic_score.
-        Falls back gracefully if the scorer module isn't available yet.
+        Falls back conservatively if the scorer module isn't available.
         """
-        # Rough token estimate (4 chars per token)
-        estimated_tokens = sum(len(str(m.get("content", ""))) for m in messages) // 4
+        _ = system_prompt, messages
 
         try:
-            from kani.scorer import LLMClassifier, Scorer
+            from kani.scorer import AgenticClassifier, LLMClassifier, Scorer
 
             llm_clf = None
+            agentic_clf = None
             if self.config.llm_classifier:
                 llm_clf = LLMClassifier(
                     model=self.config.llm_classifier.model,
                     base_url=self.config.llm_classifier.base_url,
                     api_key=self.config.llm_classifier.api_key,
                 )
-            scorer = Scorer(llm_classifier=llm_clf, enable_routing_log=False)
-            result = scorer.classify(prompt)
+                if profile == "agentic":
+                    agentic_clf = AgenticClassifier(
+                        model=self.config.llm_classifier.model,
+                        base_url=self.config.llm_classifier.base_url,
+                        api_key=self.config.llm_classifier.api_key,
+                    )
+            elif profile == "agentic":
+                agentic_clf = AgenticClassifier()
+
+            scorer = Scorer(
+                llm_classifier=llm_clf,
+                agentic_classifier=agentic_clf,
+                enable_routing_log=False,
+            )
+            result = scorer.classify(prompt, classify_agentic=(profile == "agentic"))
             tier_val = result.tier
-            # Tier may be an enum or string
             if hasattr(tier_val, "value"):
                 tier_val = tier_val.value
-            # signals may be a dict or list — only include non-zero dimensions
-            signals = result.signals
-            if isinstance(signals, dict):
+            signal_details = result.signals
+            signals = signal_details
+            if isinstance(signal_details, dict):
                 signals = [
                     k
-                    for k, v in signals.items()
+                    for k, v in signal_details.items()
                     if v and isinstance(v, dict) and v.get("raw", 0) != 0
                 ]
             return {
@@ -290,105 +309,22 @@ class Router:
                 "tier": str(tier_val) if tier_val else None,
                 "confidence": result.confidence,
                 "signals": signals,
+                "signal_details": signal_details,
                 "agentic_score": result.agentic_score,
             }
         except ImportError:
-            log.warning("Scorer module not available, using heuristic fallback")
-            return self._heuristic_classify(prompt, system_prompt, estimated_tokens)
+            log.warning("Scorer module not available, using conservative default")
+            return self._default_classify()
 
     @staticmethod
-    def _heuristic_classify(
-        prompt: str,
-        system_prompt: str,
-        estimated_tokens: int,
-    ) -> dict[str, Any]:
-        """Basic heuristic scorer when the real scorer isn't available."""
-        signals: list[str] = []
-        score = 0.3
-        agentic_score = 0.0
-
-        prompt_lower = prompt.lower()
-        length = len(prompt)
-
-        # Length signals
-        if length < 60:
-            signals.append("short_prompt")
-        elif length > 800:
-            signals.append("long_prompt")
-            score += 0.2
-
-        # Code signals
-        code_keywords = [
-            "```",
-            "def ",
-            "class ",
-            "import ",
-            "function ",
-            "const ",
-            "async ",
-        ]
-        if any(kw in prompt for kw in code_keywords):
-            signals.append("code_content")
-            score += 0.15
-
-        # Reasoning signals
-        reasoning_words = [
-            "explain",
-            "analyze",
-            "compare",
-            "evaluate",
-            "prove",
-            "derive",
-            "why",
-        ]
-        if any(w in prompt_lower for w in reasoning_words):
-            signals.append("reasoning_request")
-            score += 0.15
-
-        # Agentic signals
-        agentic_words = [
-            "search",
-            "browse",
-            "execute",
-            "run",
-            "call",
-            "fetch",
-            "tool",
-            "action",
-        ]
-        agentic_hits = sum(1 for w in agentic_words if w in prompt_lower)
-        if agentic_hits > 0:
-            signals.append("agentic_language")
-            agentic_score = min(1.0, agentic_hits * 0.25)
-
-        # System prompt complexity
-        if len(system_prompt) > 500:
-            signals.append("complex_system_prompt")
-            score += 0.1
-
-        # Token volume
-        if estimated_tokens > 2000:
-            signals.append("high_token_count")
-            score += 0.1
-
-        score = min(1.0, score)
-
-        # Map score to tier
-        if score < 0.3:
-            tier = "SIMPLE"
-        elif score < 0.55:
-            tier = "MEDIUM"
-        elif score < 0.8:
-            tier = "COMPLEX"
-        else:
-            tier = "REASONING"
-
+    def _default_classify() -> dict[str, Any]:
+        """Conservative fallback when the scorer is unavailable."""
         return {
-            "score": round(score, 3),
-            "tier": tier,
-            "confidence": 0.4,  # heuristic = low confidence
-            "signals": signals,
-            "agentic_score": round(agentic_score, 3),
+            "score": 0.0,
+            "tier": _DEFAULT_TIER,
+            "confidence": 0.35,
+            "signals": ["scorer_unavailable"],
+            "agentic_score": 0.0,
         }
 
     @staticmethod
