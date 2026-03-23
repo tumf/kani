@@ -1,0 +1,9 @@
+apiVersion: 1
+
+datasources:
+  - name: Kani SQLite
+    uid: kani-sqlite
+    type: frser-sqlite-datasource
+    access: proxy
+    jsonData:
+      path: ~/.local/share/kani/dashboard.db

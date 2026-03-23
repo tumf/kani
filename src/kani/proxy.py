@@ -7,16 +7,25 @@ import logging
 import os
 import sys
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from kani.api_keys import has_keys, validate_key
 from kani.config import KaniConfig, load_config
+from kani.dashboard import (
+    get_dashboard_stats,
+    ingest_execution_logs,
+    ingest_jsonl_logs,
+    ingest_stderr_proxy_logs,
+    log_execution_event,
+    render_dashboard_html,
+)
 from kani.router import Router, RoutingDecision
 
 logger = logging.getLogger("kani.proxy")
@@ -34,11 +43,11 @@ _router: Router | None = None
 _http: httpx.AsyncClient | None = None
 
 
-def _resolve_config_path(explicit: str | None = None) -> str:
-    """Return the config file path from explicit arg, env-var, or default."""
+def _resolve_config_path(explicit: str | None = None) -> str | None:
+    """Return the config file path from explicit arg, env-var, or None (auto-discover)."""
     if explicit:
         return explicit
-    return os.environ.get("KANI_CONFIG", "./config.yaml")
+    return os.environ.get("KANI_CONFIG")
 
 
 def configure(config_path: str | None = None) -> None:
@@ -121,10 +130,16 @@ def _openai_error(
     )
 
 
-def _kani_headers(decision: RoutingDecision) -> dict[str, str]:
+def _kani_headers(
+    decision: RoutingDecision,
+    *,
+    actual_model: str | None = None,
+    actual_provider: str | None = None,
+) -> dict[str, str]:
     return {
         "X-Kani-Tier": str(decision.tier),
-        "X-Kani-Model": decision.model,
+        "X-Kani-Model": actual_model or decision.model,
+        "X-Kani-Provider": actual_provider or decision.provider,
         "X-Kani-Score": f"{decision.score:.4f}",
         "X-Kani-Signals": json.dumps(decision.signals) if decision.signals else "{}",
     }
@@ -142,11 +157,65 @@ def _get_default_provider_info() -> tuple[str, str, str]:
     return base_url, api_key, model
 
 
+def _log_usage(
+    model: str,
+    provider: str | None,
+    usage: dict[str, Any] | None,
+    profile: str | None = None,
+    elapsed_ms: float | None = None,
+    *,
+    decision: RoutingDecision | None = None,
+    request_id: str | None = None,
+) -> None:
+    """Log token usage from an upstream response."""
+    if not usage:
+        return
+    prompt = usage.get("prompt_tokens", 0)
+    completion = usage.get("completion_tokens", 0)
+    total = usage.get("total_tokens", 0) or (prompt + completion)
+    parts = []
+    if request_id:
+        parts.append(f"request_id={request_id}")
+    parts.extend(
+        [
+            f"model={model}",
+            f"provider={provider or 'unknown'}",
+            f"prompt={prompt}",
+            f"completion={completion}",
+            f"total={total}",
+        ]
+    )
+    if profile:
+        parts.append(f"profile={profile}")
+    if elapsed_ms is not None:
+        parts.append(f"elapsed_ms={elapsed_ms:.0f}")
+    logger.info("USAGE %s", " ".join(parts))
+
+    log_execution_event(
+        request_id=request_id,
+        tier=decision.tier if decision else None,
+        score=decision.score if decision else None,
+        confidence=decision.confidence if decision else None,
+        agentic_score=decision.agentic_score if decision else None,
+        model=model,
+        provider=provider,
+        profile=profile,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        total_tokens=total,
+        elapsed_ms=elapsed_ms,
+    )
+
+
 async def _proxy_upstream(
     base_url: str,
     api_key: str,
     body: dict[str, Any],
     decision: RoutingDecision | None,
+    profile: str | None = None,
+    *,
+    actual_provider: str | None = None,
+    request_id: str | None = None,
 ) -> StreamingResponse | JSONResponse:
     """Forward a chat-completion request to the upstream provider."""
     assert _http is not None
@@ -160,10 +229,25 @@ async def _proxy_upstream(
         headers["Authorization"] = f"Bearer {api_key}"
 
     is_streaming = body.get("stream", False)
-    extra_headers = _kani_headers(decision) if decision else {}
+    model_name = body.get("model", "unknown")
+    extra_headers = (
+        _kani_headers(
+            decision,
+            actual_model=model_name,
+            actual_provider=actual_provider,
+        )
+        if decision
+        else {}
+    )
+    t0 = time.monotonic()
 
     try:
         if is_streaming:
+            # Inject stream_options to request usage in final chunk
+            stream_opts = body.get("stream_options") or {}
+            stream_opts["include_usage"] = True
+            body["stream_options"] = stream_opts
+
             req = _http.build_request("POST", url, json=body, headers=headers)
             upstream = await _http.send(req, stream=True)
 
@@ -180,6 +264,24 @@ async def _proxy_upstream(
                 try:
                     async for line in upstream.aiter_lines():
                         yield f"{line}\n"
+                        # Parse usage from the final data chunk
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                usage = chunk.get("usage")
+                                if usage:
+                                    elapsed = (time.monotonic() - t0) * 1000
+                                    _log_usage(
+                                        model_name,
+                                        actual_provider,
+                                        usage,
+                                        profile,
+                                        elapsed,
+                                        decision=decision,
+                                        request_id=request_id,
+                                    )
+                            except (json.JSONDecodeError, TypeError):
+                                pass
                 finally:
                     await upstream.aclose()
 
@@ -194,14 +296,25 @@ async def _proxy_upstream(
             )
         else:
             resp = await _http.post(url, json=body, headers=headers)
+            elapsed = (time.monotonic() - t0) * 1000
             if resp.status_code != 200:
                 return _openai_error(
                     resp.status_code,
                     f"Upstream error: {resp.text[:500]}",
                     "upstream_error",
                 )
+            resp_data = resp.json()
+            _log_usage(
+                model_name,
+                actual_provider,
+                resp_data.get("usage"),
+                profile,
+                elapsed,
+                decision=decision,
+                request_id=request_id,
+            )
             return JSONResponse(
-                content=resp.json(),
+                content=resp_data,
                 headers=extra_headers,
             )
 
@@ -211,6 +324,66 @@ async def _proxy_upstream(
         return _openai_error(
             502, f"Upstream connection error: {exc!r}", "upstream_error"
         )
+
+
+# ── Fallback helpers ──────────────────────────────────────────────────────────
+
+
+def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
+    """Check if a response is a retryable error (5xx, timeout, connection error)."""
+    if isinstance(result, JSONResponse):
+        return result.status_code >= 500
+    return False
+
+
+async def _try_with_fallbacks(
+    body: dict[str, Any],
+    decision: RoutingDecision,
+    profile: str | None = None,
+    *,
+    request_id: str | None = None,
+) -> StreamingResponse | JSONResponse:
+    """Try primary, then fallbacks on failure."""
+    # Try primary
+    result = await _proxy_upstream(
+        decision.base_url.rstrip("/"),
+        decision.api_key or "",
+        body,
+        decision,
+        profile=profile,
+        actual_provider=decision.provider,
+        request_id=request_id,
+    )
+
+    if not _is_retryable_error(result):
+        return result
+
+    # Try fallbacks
+    for i, fb in enumerate(decision.fallbacks):
+        logger.warning(
+            "FALLBACK [%d/%d] model=%s provider=%s (primary=%s failed)",
+            i + 1,
+            len(decision.fallbacks),
+            fb.model,
+            fb.provider,
+            decision.model,
+        )
+        fb_body = dict(body)
+        fb_body["model"] = fb.model
+        result = await _proxy_upstream(
+            fb.base_url.rstrip("/"),
+            fb.api_key or "",
+            fb_body,
+            decision,
+            profile=profile,
+            actual_provider=fb.provider,
+            request_id=request_id,
+        )
+        if not _is_retryable_error(result):
+            return result
+
+    # All failed, return last error
+    return result
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -230,6 +403,7 @@ async def chat_completions(request: Request):
     if model_field.startswith("kani/"):
         # ── Routed request ────────────────────────────────────────────────
         profile_name = model_field.split("/", 1)[1]  # e.g. "auto", "eco"
+        request_id = uuid.uuid4().hex[:12]
         assert _router is not None
         try:
             decision: RoutingDecision = _router.route(messages, profile=profile_name)
@@ -238,8 +412,10 @@ async def chat_completions(request: Request):
             return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
         logger.info(
-            "ROUTE model=%s tier=%s score=%.4f confidence=%.4f agentic=%.4f profile=%s",
+            "ROUTE request_id=%s model=%s provider=%s tier=%s score=%.4f confidence=%.4f agentic=%.4f profile=%s",
+            request_id,
             decision.model,
+            decision.provider,
             decision.tier,
             decision.score,
             decision.confidence,
@@ -249,9 +425,9 @@ async def chat_completions(request: Request):
 
         # Replace the model field with the actual model name
         body["model"] = decision.model
-        base_url = decision.base_url.rstrip("/")
-        api_key = decision.api_key or ""
-        return await _proxy_upstream(base_url, api_key, body, decision)
+        return await _try_with_fallbacks(
+            body, decision, profile_name, request_id=request_id
+        )
 
     else:
         # ── Pass-through to default provider ──────────────────────────────
@@ -260,7 +436,14 @@ async def chat_completions(request: Request):
         logger.info(
             "PASSTHROUGH model=%s provider=%s", model_field, _config.default_provider
         )
-        return await _proxy_upstream(base_url, api_key, body, decision=None)
+        return await _proxy_upstream(
+            base_url,
+            api_key,
+            body,
+            decision=None,
+            profile=None,
+            actual_provider=_config.default_provider,
+        )
 
 
 @app.get("/v1/models")
@@ -285,7 +468,11 @@ async def list_models():
     seen_models: set[str] = set()
     for profile in _config.profiles.values():
         for tier_cfg in profile.tiers.values():
-            for m in [tier_cfg.primary, *tier_cfg.fallback]:
+            all_model_ids = [
+                tier_cfg.primary_model_id(),
+                *tier_cfg.fallback_model_ids(),
+            ]
+            for m in all_model_ids:
                 if m not in seen_models:
                     seen_models.add(m)
                     data.append(
@@ -324,3 +511,29 @@ async def route_debug(request: Request):
         return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
     return decision.model_dump()
+
+
+# ── Dashboard endpoints ────────────────────────────────────────────────────
+
+
+@app.get("/dashboard")
+async def dashboard():
+    """HTML dashboard showing routing analytics."""
+    ingest_jsonl_logs(days=30)
+    execution_ingested = ingest_execution_logs(days=30)
+    if execution_ingested == 0:
+        ingest_stderr_proxy_logs()
+
+    stats = get_dashboard_stats(hours=24)
+    html = render_dashboard_html(stats)
+    return HTMLResponse(content=html)
+
+
+@app.get("/dashboard/stats")
+async def dashboard_stats(hours: int = 24):
+    """JSON endpoint for dashboard stats."""
+    ingest_jsonl_logs(days=max(1, hours // 24))
+    execution_ingested = ingest_execution_logs(days=30)
+    if execution_ingested == 0:
+        ingest_stderr_proxy_logs()
+    return get_dashboard_stats(hours=hours)

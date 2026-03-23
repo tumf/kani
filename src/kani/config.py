@@ -75,12 +75,51 @@ class ProviderConfig(BaseModel):
     models: list[str] = Field(default_factory=list)  # optional model whitelist
 
 
+class ModelEntry(BaseModel):
+    """A model with optional provider override."""
+
+    model: str
+    provider: str = ""  # empty = inherit from tier or default
+
+
 class TierModelConfig(BaseModel):
     """Model selection for a single complexity tier within a profile."""
 
-    primary: str  # model ID e.g. 'google/gemini-2.5-flash'
-    fallback: list[str] = Field(default_factory=list)  # fallback model IDs
-    provider: str = "default"  # which provider to use ('default' -> default_provider)
+    primary: str | ModelEntry  # model ID string OR {model, provider}
+    fallback: list[str | ModelEntry] = Field(default_factory=list)
+    provider: str = "default"  # tier-level default provider
+
+    def resolve_primary(self) -> tuple[str, str]:
+        """Return (model_id, provider_name). Provider may be empty string."""
+        if isinstance(self.primary, ModelEntry):
+            return self.primary.model, self.primary.provider
+        return self.primary, ""
+
+    def resolve_fallbacks(self) -> list[tuple[str, str]]:
+        """Return list of (model_id, provider_name) tuples."""
+        result: list[tuple[str, str]] = []
+        for entry in self.fallback:
+            if isinstance(entry, ModelEntry):
+                result.append((entry.model, entry.provider))
+            else:
+                result.append((entry, ""))
+        return result
+
+    def primary_model_id(self) -> str:
+        """Return just the model ID string (for backward compat)."""
+        if isinstance(self.primary, ModelEntry):
+            return self.primary.model
+        return self.primary
+
+    def fallback_model_ids(self) -> list[str]:
+        """Return just the model ID strings (for backward compat)."""
+        result: list[str] = []
+        for entry in self.fallback:
+            if isinstance(entry, ModelEntry):
+                result.append(entry.model)
+            else:
+                result.append(entry)
+        return result
 
 
 class ProfileConfig(BaseModel):

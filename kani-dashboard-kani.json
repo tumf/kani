@@ -1,0 +1,147 @@
+{
+  "uid": "kani-routing",
+  "title": "Kani Smart Router",
+  "tags": ["kani", "routing"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "GitHub Repo",
+      "type": "link",
+      "url": "https://github.com/tumf/kani",
+      "targetBlank": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total Routing Requests (24h)",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) as value FROM routing_logs WHERE timestamp > datetime('now', '-24 hours')"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {}
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "piechart",
+      "title": "Tier Distribution",
+      "gridPos": {"h": 8, "w": 8, "x": 6, "y": 0},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT tier, COUNT(*) as count FROM routing_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY tier ORDER BY count DESC"
+        }
+      ],
+      "options": {
+        "legend": {"displayMode": "list", "placement": "right"}
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Average Scores by Tier",
+      "gridPos": {"h": 8, "w": 10, "x": 14, "y": 0},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT tier, ROUND(AVG(score), 4) as avg_score, ROUND(AVG(confidence), 4) as avg_confidence, ROUND(AVG(agentic_score), 4) as avg_agentic, COUNT(*) as count FROM routing_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY tier ORDER BY tier"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "barchart",
+      "title": "Requests by Hour",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT strftime('%Y-%m-%d %H:00:00', timestamp) as time, COUNT(*) as count FROM routing_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY 1 ORDER BY 1"
+        }
+      ],
+      "options": {
+        "legend": {"displayMode": "list"},
+        "xTickLabel": {"rotation": 45}
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Score Distribution Over Time",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT datetime(substr(timestamp, 1, 19)) as time, AVG(score) as avg_score FROM routing_logs WHERE timestamp > datetime('now', '-24 hours') GROUP BY substr(timestamp, 1, 13) ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2}
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Avg Confidence (24h)",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 24},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(AVG(confidence), 4) as value FROM routing_logs WHERE timestamp > datetime('now', '-24 hours')"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Avg Score (24h)",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 24},
+      "datasource": {"uid": "kani-sqlite"},
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(AVG(score), 4) as value FROM routing_logs WHERE timestamp > datetime('now', '-24 hours')"
+        }
+      ]
+    }
+  ]
+}

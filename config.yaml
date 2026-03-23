@@ -12,22 +12,22 @@ default_profile: auto
 # LLM Classifier (escalation when rules confidence < 0.7)
 # ---------------------------------------------------------------------------
 llm_classifier:
-  model: "glm-4.5-air"
-  base_url: "http://127.0.0.1:8317/v1"
-  api_key: "local-test-key"
+    model: "gpt-5.3-codex-spark"
+    base_url: "http://127.0.0.1:8317/v1"
+    api_key: "sk-2j7cWKoqPsKseSTa1"
 
 # ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
 providers:
-  openrouter:
-    name: openrouter
-    base_url: "https://openrouter.ai/api/v1"
-    api_key: "${OPENROUTER_API_KEY}"
-  cliproxy:
-    name: cliproxy
-    base_url: "http://127.0.0.1:8317/v1"
-    api_key: "local-test-key"
+    openrouter:
+        name: openrouter
+        base_url: "https://openrouter.ai/api/v1"
+        api_key: "${OPENROUTER_API_KEY}"
+    cliproxy:
+        name: cliproxy
+        base_url: "http://127.0.0.1:8317/v1"
+        api_key: "sk-2j7cWKoqPsKseSTa1"
 
 # ---------------------------------------------------------------------------
 # Routing Profiles (all models must exist in CLI Proxy)
@@ -47,115 +47,137 @@ providers:
 # ---------------------------------------------------------------------------
 
 profiles:
+    # ── auto: balanced cost / quality ──────────────────────────────────────
+    # Updated 2026-03-22: 定額モデル優先、ベンチマーク反映
+    auto:
+        tiers:
+            SIMPLE:
+                primary: "gpt-5.3-codex-spark"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+            MEDIUM:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "glm-5-turbo"
+                    - "google/gemini-3.1-flash-lite-preview"
+            COMPLEX:
+                primary: "claude-opus-4-6"
+                fallback:
+                    - "gpt-5.4"
+                    - "glm-5"
+                    - "google/gemini-3.1-pro-preview"
+            REASONING:
+                primary: "claude-opus-4-6"
+                fallback:
+                    - "gpt-5.4"
+                    - "google/gemini-3.1-pro-preview"
 
-  # ── auto: balanced cost / quality ──────────────────────────────────────
-  auto:
-    tiers:
-      SIMPLE:
-        primary: "glm-4.5-air"
-        fallback:
-          - "claude-haiku-4-5-20251001"
-          - "gpt-5-codex-mini"
-        provider: default
-      MEDIUM:
-        primary: "gpt-5"
-        fallback:
-          - "claude-sonnet-4-6"
-          - "deepseek/deepseek-v3.2"
-        provider: default
-      COMPLEX:
-        primary: "claude-opus-4-6"
-        fallback:
-          - "gpt-5.3-codex"
-          - "google/gemini-3.1-pro-preview"
-        provider: default
-      REASONING:
-        primary: "claude-sonnet-4-6"
-        fallback:
-          - "claude-opus-4-6"
-          - "x-ai/grok-4.20-beta"
-        provider: default
+    # ── eco: cheapest viable models (定額優先) ─────────────────────────────
+    # Updated 2026-03-22: 定額モデル優先、GLM-4.7へ更新
+    eco:
+        tiers:
+            SIMPLE:
+                primary: "glm-4.7"
+                fallback:
+                    - "claude-3-5-haiku-20241022"
+                    - "glm-4.5-air"
+                provider: default
+            MEDIUM:
+                primary: "glm-4.7"
+                fallback:
+                    - "claude-haiku-4-5-20251001"
+                    - "deepseek/deepseek-v3.2"
+                provider: default
+            COMPLEX:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "deepseek/deepseek-v3.2"
+                    - "glm-4.7"
+                provider: default
+            REASONING:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "deepseek/deepseek-v3.2-speciale"
+                    - "glm-4.7"
+                provider: default
 
-  # ── eco: cheapest viable models ────────────────────────────────────────
-  eco:
-    tiers:
-      SIMPLE:
-        primary: "glm-4.5-air"
-        fallback:
-          - "claude-3-5-haiku-20241022"
-          - "gpt-5-codex-mini"
-        provider: default
-      MEDIUM:
-        primary: "glm-4.5"
-        fallback:
-          - "glm-4.5-air"
-          - "deepseek/deepseek-v3.2"
-        provider: default
-      COMPLEX:
-        primary: "deepseek/deepseek-v3.2"
-        fallback:
-          - "gpt-5"
-          - "glm-4.6"
-        provider: default
-      REASONING:
-        primary: "deepseek/deepseek-v3.2-speciale"
-        fallback:
-          - "gpt-5"
-          - "glm-4.6"
-        provider: default
+    # ── premium: best quality models (定額優先) ──────────────────────────────
+    # Updated 2026-03-22: 定額モデル優先、ベンチマーク反映
+    premium:
+        tiers:
+            SIMPLE:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - "glm-4.7"
+                provider: default
+            MEDIUM:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - "gpt-5"
+                provider: default
+            COMPLEX:
+                primary: "claude-opus-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - model: "google/gemini-3.1-pro-preview"
+                      provider: openrouter
+                provider: default
+            REASONING:
+                primary: "claude-opus-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - model: "x-ai/grok-4.20-beta"
+                      provider: openrouter
+                provider: default
 
-  # ── premium: best quality models ───────────────────────────────────────
-  premium:
-    tiers:
-      SIMPLE:
-        primary: "gpt-5"
-        fallback:
-          - "claude-sonnet-4-6"
-          - "glm-4.7"
-        provider: default
-      MEDIUM:
-        primary: "gpt-5.3-codex"
-        fallback:
-          - "claude-opus-4-6"
-          - "gpt-5.2-codex"
-        provider: default
-      COMPLEX:
-        primary: "claude-opus-4-6"
-        fallback:
-          - "gpt-5.4"
-          - "gpt-5.3-codex"
-        provider: default
-      REASONING:
-        primary: "claude-opus-4-6"
-        fallback:
-          - "gpt-5.4"
-          - "x-ai/grok-4.20-beta"
-        provider: default
+    # ── compress: fixed cheap/fast model for summarisation ────────────────
+    compress:
+        tiers:
+            SIMPLE:
+                primary: "google/gemini-3.1-flash-lite-preview"
+                fallback:
+                    - "gpt-5"
+            MEDIUM:
+                primary: "google/gemini-3.1-flash-lite-preview"
+                fallback:
+                    - "gpt-5"
+            COMPLEX:
+                primary: "google/gemini-3.1-flash-lite-preview"
+                fallback:
+                    - "gpt-5"
+            REASONING:
+                primary: "google/gemini-3.1-flash-lite-preview"
+                fallback:
+                    - "gpt-5"
 
-  # ── agentic: optimized for tool use / function calling ─────────────────
-  agentic:
-    tiers:
-      SIMPLE:
-        primary: "gpt-5-codex-mini"
-        fallback:
-          - "claude-haiku-4-5-20251001"
-          - "glm-4.5-air"
-        provider: default
-      MEDIUM:
-        primary: "gpt-5-codex"
-        fallback:
-          - "claude-sonnet-4-6"
-          - "gpt-5"
-        provider: default
-      COMPLEX:
-        primary: "claude-sonnet-4-6"
-        fallback:
-          - "gpt-5.3-codex"
-          - "claude-opus-4-6"
-        provider: default
-      REASONING:
-        primary: "claude-opus-4-6"
-        fallback:
-          - "claude-sonnet-4-6"
-          - "x-ai/grok-4.20-multi-agent-beta"
-        provider: default
+    # ── agentic: optimized for tool use / function calling (定額優先) ──────
+    # Updated 2026-03-22: 定額モデル優先、ベンチマーク反映
+    agentic:
+        tiers:
+            SIMPLE:
+                primary: "claude-haiku-4-5-20251001"
+                fallback:
+                    - "gpt-5-codex-mini"
+                    - "glm-4.7"
+                provider: default
+            MEDIUM:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - "gpt-5-codex"
+                provider: default
+            COMPLEX:
+                primary: "claude-sonnet-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - "claude-opus-4-6"
+                provider: default
+            REASONING:
+                primary: "claude-opus-4-6"
+                fallback:
+                    - "gpt-5.3-codex"
+                    - model: "x-ai/grok-4.20-multi-agent-beta"
+                      provider: openrouter
+                provider: default

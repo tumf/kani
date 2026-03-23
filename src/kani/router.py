@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from kani.config import KaniConfig, resolve_env
+from kani.config import KaniConfig, ProviderConfig, resolve_env
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +15,15 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Routing result
 # ---------------------------------------------------------------------------
+
+
+class FallbackEntry(BaseModel):
+    """A fallback model with provider connection info."""
+
+    model: str
+    provider: str
+    base_url: str
+    api_key: str = ""
 
 
 class RoutingDecision(BaseModel):
@@ -29,6 +38,7 @@ class RoutingDecision(BaseModel):
     confidence: float
     signals: list[str] = Field(default_factory=list)
     agentic_score: float = 0.0
+    fallbacks: list[FallbackEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -114,22 +124,33 @@ class Router:
             if tier_cfg is None:
                 raise ValueError(f"No tier config for '{tier}' in profile '{profile}'")
 
-        model_id = tier_cfg.primary
+        # --- Resolve primary model and provider ---
+        primary_model, primary_provider = tier_cfg.resolve_primary()
+        model_id = primary_model
 
-        # --- Resolve provider ---
-        provider_name = tier_cfg.provider
-        if provider_name == "default":
-            provider_name = self.config.default_provider
+        # Resolve provider name: entry override > tier default > config default
+        provider_name = self._resolve_provider_name(primary_provider, tier_cfg.provider)
 
-        provider_cfg = self.config.providers.get(provider_name)
-        if provider_cfg is None:
-            # Try default provider
-            provider_cfg = self.config.providers.get(self.config.default_provider)
-        if provider_cfg is None:
-            raise ValueError(f"Provider '{provider_name}' not found in config")
+        provider_cfg = self._lookup_provider(provider_name)
 
         # --- Resolve env vars in api_key ---
         api_key = resolve_env(provider_cfg.api_key)
+
+        # --- Build fallback entries ---
+        fallback_entries: list[FallbackEntry] = []
+        for fb_model, fb_provider in tier_cfg.resolve_fallbacks():
+            fb_provider_name = self._resolve_provider_name(
+                fb_provider, tier_cfg.provider
+            )
+            fb_provider_cfg = self._lookup_provider(fb_provider_name)
+            fallback_entries.append(
+                FallbackEntry(
+                    model=fb_model,
+                    provider=fb_provider_name,
+                    base_url=fb_provider_cfg.base_url,
+                    api_key=resolve_env(fb_provider_cfg.api_key),
+                )
+            )
 
         return RoutingDecision(
             model=model_id,
@@ -141,11 +162,30 @@ class Router:
             confidence=confidence,
             signals=signals,
             agentic_score=agentic_score,
+            fallbacks=fallback_entries,
         )
 
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _resolve_provider_name(self, entry_provider: str, tier_provider: str) -> str:
+        """Resolve provider name: entry override > tier default > config default."""
+        if entry_provider:
+            return entry_provider
+        if tier_provider and tier_provider != "default":
+            return tier_provider
+        return self.config.default_provider
+
+    def _lookup_provider(self, provider_name: str) -> ProviderConfig:
+        """Look up a ProviderConfig by name, falling back to default."""
+        provider_cfg = self.config.providers.get(provider_name)
+        if provider_cfg is None:
+            # Try default provider
+            provider_cfg = self.config.providers.get(self.config.default_provider)
+        if provider_cfg is None:
+            raise ValueError(f"Provider '{provider_name}' not found in config")
+        return provider_cfg
 
     def _resolve_profile(self, profile: str | None, model: str | None) -> str:
         """Determine the profile name from explicit arg or model string."""
