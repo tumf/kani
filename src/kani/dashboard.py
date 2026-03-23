@@ -130,6 +130,31 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return None
 
 
+def recommended_dashboard_ingest_days(
+    full_days: int = 30, incremental_days: int = 2
+) -> int:
+    """Use a full backfill only on an empty dashboard DB; otherwise ingest recent logs only."""
+    _init_dashboard_db()
+    with sqlite3.connect(_DASHBOARD_DB_PATH) as conn:
+        routing_count = conn.execute("SELECT COUNT(*) FROM routing_logs").fetchone()[0]
+        execution_count = conn.execute(
+            "SELECT COUNT(*) FROM execution_logs"
+        ).fetchone()[0]
+    if routing_count == 0 and execution_count == 0:
+        return full_days
+    return incremental_days
+
+
+def dashboard_needs_stderr_backfill() -> bool:
+    """Only run stderr backfill when structured execution data is still absent."""
+    _init_dashboard_db()
+    with sqlite3.connect(_DASHBOARD_DB_PATH) as conn:
+        execution_count = conn.execute(
+            "SELECT COUNT(*) FROM execution_logs"
+        ).fetchone()[0]
+    return execution_count == 0
+
+
 def _parse_proxy_log_timestamp(ts: str) -> str:
     parsed = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S,%f")
     parsed = parsed.replace(tzinfo=_LOCAL_TZ)
@@ -174,6 +199,62 @@ def _insert_routing_record(conn: sqlite3.Connection, record: dict[str, Any]) -> 
     ).fetchone()
     if existing:
         return 0
+
+    legacy_row = conn.execute(
+        """
+        SELECT id, signals
+        FROM routing_logs
+        WHERE timestamp = ?
+          AND tier = ?
+          AND score = ?
+          AND confidence = ?
+          AND agentic_score = ?
+          AND (
+                COALESCE(profile, '') = ''
+             OR COALESCE(model, '') = ''
+             OR COALESCE(provider, '') = ''
+          )
+        LIMIT 1
+        """,
+        (
+            record["timestamp"],
+            record["tier"],
+            record["score"],
+            record["confidence"],
+            record["agentic_score"],
+        ),
+    ).fetchone()
+    if legacy_row:
+        existing_signals: dict[str, Any] = {}
+        raw_signals = legacy_row[1]
+        if raw_signals:
+            try:
+                parsed = json.loads(raw_signals)
+                if isinstance(parsed, dict):
+                    existing_signals = parsed
+            except (TypeError, ValueError, json.JSONDecodeError):
+                existing_signals = {}
+
+        merged_signals = record.get("signals") or existing_signals
+        before = conn.total_changes
+        conn.execute(
+            """
+            UPDATE routing_logs
+            SET model = COALESCE(NULLIF(model, ''), ?),
+                provider = COALESCE(NULLIF(provider, ''), ?),
+                profile = COALESCE(NULLIF(profile, ''), ?),
+                signals = ?
+            WHERE id = ?
+            """,
+            (
+                record.get("model"),
+                record.get("provider"),
+                record.get("profile"),
+                json.dumps(merged_signals, ensure_ascii=False),
+                legacy_row[0],
+            ),
+        )
+        return conn.total_changes - before
 
     before = conn.total_changes
     conn.execute(
@@ -451,7 +532,9 @@ def ingest_stderr_proxy_logs() -> int:
                         if data.get("agentic")
                         else None,
                         "profile": data.get("profile"),
+                        "signals": {},
                     }
+                    count += _insert_routing_record(conn, event)
                     pending_routes.append(event)
                     if event.get("request_id"):
                         pending_by_request_id[event["request_id"]] = event
@@ -1100,6 +1183,7 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         "<head>",
         '    <meta name="viewport" content="width=device-width, initial-scale=1">',
         "    <title>Kani Dashboard</title>",
+        '    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ctext y=%2252%22 font-size=%2252%22%3E🦀%3C/text%3E%3C/svg%3E">',
         '    <script src="https://d3js.org/d3.v7.min.js"></script>',
         "    <style>",
         "        * { box-sizing: border-box; }",
@@ -1173,7 +1257,7 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         '<div class="container">',
         "    <h1>🦀 Kani Dashboard</h1>",
         '    <div class="subtitle">Routing tiers + actual model/provider usage + token trends</div>',
-        f'    <div class="status-row"><div class="status-pill">Updated <strong>{escape(last_updated_relative)}</strong></div><div>Last update: {escape(last_updated_label)}</div><div>Profiles: <strong>{escape(filter_summary)}</strong></div></div>',
+        f'    <div class="status-row"><div class="status-pill">Latest traffic <strong>{escape(last_updated_relative)}</strong></div><div>Data through: {escape(last_updated_label)}</div><div>Profiles: <strong>{escape(filter_summary)}</strong></div></div>',
         filter_html,
         '    <div class="cards">',
         _render_window_cards(stats.get("windows", {})),
@@ -1181,8 +1265,7 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         '    <div class="section">',
         "        <h2>Graphs</h2>",
         '        <div class="section-grid">',
-        '            <div class="card trend-card"><h2>Requests / day (30d)</h2><div class="trend-subtitle">Daily routed requests across the last 30 days</div><div id="requests-chart" class="trend-chart"></div><div class="trend-tooltip" id="requests-chart-tooltip"></div></div>',
-        '            <div class="card trend-card"><h2>Input / Output tokens / day (30d)</h2><div class="trend-subtitle">Daily prompt and completion token volume across the last 30 days</div><div id="tokens-chart" class="trend-chart"></div><div class="trend-tooltip" id="tokens-chart-tooltip"></div></div>'
+        '            <div class="card trend-card span-full"><h2>Requests / day + Input / Output tokens / day (30d)</h2><div class="trend-subtitle">Daily routed requests overlaid on top of daily input/output token bars across the last 30 days</div><div id="combined-trend-chart" class="trend-chart"></div><div class="trend-tooltip" id="combined-trend-chart-tooltip"></div></div>',
         f'            <div class="card"><h2>Actual model usage (7d)</h2>{_render_bar_chart(model_7d_chart_items, value_key="count", color="#7a5af8", detail_key="detail")}</div>',
         f'            <div class="card"><h2>Tier distribution ({escape(current_label)})</h2>{_render_bar_chart(tier_chart_items, value_key="count", color="#175cd3")}</div>',
         f'            <div class="card"><h2>Confidence buckets ({escape(current_label)})</h2>{_render_bar_chart(confidence_chart_items, value_key="count", color="#36bffa")}</div>',
@@ -1211,36 +1294,7 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         "    <script>",
         f"        const dailyTrends = {daily_trends_json};",
         "        const formatCompact = d3.format('~s');",
-        "        function renderTrendLineChart(containerId, valueKey, color, valueLabel) {",
-        "            const container = document.getElementById(containerId);",
-        "            const tooltip = document.getElementById(`${containerId}-tooltip`);",
-        "            if (!container) return;",
-        "            if (!window.d3) { container.innerHTML = '<div class=\"empty\">D3 failed to load</div>'; return; }",
-        "            const data = dailyTrends.map((row) => ({ day: new Date(`${row.day}T00:00:00Z`), label: row.label, value: Number(row[valueKey] || 0) }));",
-        "            if (!data.length) { container.innerHTML = '<div class=\"empty\">No data yet</div>'; return; }",
-        "            const width = Math.max(container.clientWidth || 360, 320);",
-        "            const height = 280;",
-        "            const margin = { top: 16, right: 20, bottom: 36, left: 52 };",
-        "            const innerWidth = width - margin.left - margin.right;",
-        "            const innerHeight = height - margin.top - margin.bottom;",
-        "            container.innerHTML = '';",
-        "            const svg = d3.select(container)",
-        "                .append('svg')",
-        "                .attr('viewBox', `0 0 ${width} ${height}`)",
-        "                .attr('role', 'img')",
-        "                .attr('aria-label', `${valueLabel} line chart over 30 days`);",
-        "            const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);",
-        "            const x = d3.scaleTime().domain(d3.extent(data, (d) => d.day)).range([0, innerWidth]);",
-        "            const yMax = d3.max(data, (d) => d.value) || 1;",
-        "            const y = d3.scaleLinear().domain([0, yMax * 1.12]).nice().range([innerHeight, 0]);",
-        "            const line = d3.line().x((d) => x(d.day)).y((d) => y(d.value)).curve(d3.curveCatmullRom.alpha(0.5));",
-        "            g.append('g').attr('class', 'trend-grid').call(d3.axisLeft(y).ticks(5).tickSize(-innerWidth).tickFormat(''));",
-        "            g.append('g').attr('class', 'trend-axis').attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x).ticks(6).tickFormat(d3.timeFormat('%m-%d')));",
-        "            g.append('g').attr('class', 'trend-axis').call(d3.axisLeft(y).ticks(5).tickFormat((d) => formatCompact(d).replace('G', 'B')));",
-        "            g.append('path').datum(data).attr('fill', 'none').attr('stroke', color).attr('stroke-width', 3).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round').attr('d', line);",
-        "            g.selectAll('.trend-point').data(data).enter().append('circle').attr('class', 'trend-point').attr('cx', (d) => x(d.day)).attr('cy', (d) => y(d.value)).attr('r', 4).attr('fill', '#ffffff').attr('stroke', color).attr('stroke-width', 2).on('mouseenter', function(event, d) { d3.select(this).attr('r', 6); tooltip.style.opacity = '1'; tooltip.innerHTML = `<strong>${d.label}</strong><span class='trend-value'>${valueLabel}: ${d3.format(',')(d.value)}</span>`; }).on('mousemove', function(event) { const rect = container.getBoundingClientRect(); tooltip.style.left = `${event.clientX - rect.left}px`; tooltip.style.top = `${event.clientY - rect.top}px`; }).on('mouseleave', function() { d3.select(this).attr('r', 4); tooltip.style.opacity = '0'; });",
-        "        }",
-        "        function renderGroupedTokenTrendChart(containerId, valueLabel) {",
+        "        function renderCombinedTrendChart(containerId) {",
         "            const container = document.getElementById(containerId);",
         "            const tooltip = document.getElementById(`${containerId}-tooltip`);",
         "            if (!container) return;",
@@ -1249,42 +1303,57 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         "                { key: 'prompt_tokens', label: 'Input tokens', color: '#12b76a' },",
         "                { key: 'completion_tokens', label: 'Output tokens', color: '#f79009' },",
         "            ];",
+        "            const requestColor = '#175cd3';",
         "            const data = dailyTrends.map((row) => ({",
         "                dayKey: row.day,",
         "                label: row.label,",
+        "                requests: Number(row.requests || 0),",
         "                prompt_tokens: Number(row.prompt_tokens || 0),",
         "                completion_tokens: Number(row.completion_tokens || 0),",
         "            }));",
         "            if (!data.length) { container.innerHTML = '<div class=\"empty\">No data yet</div>'; return; }",
         "            const width = Math.max(container.clientWidth || 360, 320);",
-        "            const height = 280;",
-        "            const margin = { top: 18, right: 20, bottom: 38, left: 56 };",
+        "            const height = 320;",
+        "            const margin = { top: 20, right: 60, bottom: 38, left: 56 };",
         "            const innerWidth = width - margin.left - margin.right;",
         "            const innerHeight = height - margin.top - margin.bottom;",
-        "            const barGap = 2;",
-        "            const barWidth = Math.max(4, (innerWidth / Math.max(1, data.length) - barGap) / 2);",
         "            container.innerHTML = '';",
         "            const svg = d3.select(container)",
         "                .append('svg')",
         "                .attr('viewBox', `0 0 ${width} ${height}`)",
         "                .attr('role', 'img')",
-        "                .attr('aria-label', `${valueLabel} bars over 30 days`);",
+        "                .attr('aria-label', 'Requests line overlaid on input and output token bars over 30 days');",
         "            const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);",
-        "            const x = d3.scaleBand().domain(data.map((d) => d.dayKey)).range([0, innerWidth]).paddingInner(0.2);",
-        "            const yMax = d3.max(data, (d) => d3.max(series, (s) => d[s.key])) || 1;",
-        "            const y = d3.scaleLinear().domain([0, yMax * 1.12]).nice().range([innerHeight, 0]);",
+        "            const x = d3.scaleBand().domain(data.map((d) => d.dayKey)).range([0, innerWidth]).paddingInner(0.22);",
+        "            const barX = d3.scaleBand().domain(series.map((s) => s.key)).range([0, x.bandwidth()]).padding(0.18);",
+        "            const tokenMax = d3.max(data, (d) => d3.max(series, (s) => d[s.key])) || 1;",
+        "            const requestMax = d3.max(data, (d) => d.requests) || 1;",
+        "            const tokenY = d3.scaleLinear().domain([0, tokenMax * 1.12]).nice().range([innerHeight, 0]);",
+        "            const requestY = d3.scaleLinear().domain([0, requestMax * 1.12]).nice().range([innerHeight, 0]);",
         "            const visibleTicks = data.map((_, index) => index).filter((index) => index === 0 || index === data.length - 1 || index % 5 === 0).map((index) => data[index].dayKey);",
-        "            g.append('g').attr('class', 'trend-grid').call(d3.axisLeft(y).ticks(5).tickSize(-innerWidth).tickFormat(''));",
+        "            g.append('g').attr('class', 'trend-grid').call(d3.axisLeft(tokenY).ticks(5).tickSize(-innerWidth).tickFormat(''));",
         "            g.append('g').attr('class', 'trend-axis').attr('transform', `translate(0,${innerHeight})`).call(d3.axisBottom(x).tickValues(visibleTicks).tickFormat((d) => String(d).slice(5)));",
-        "            g.append('g').attr('class', 'trend-axis').call(d3.axisLeft(y).ticks(5).tickFormat((d) => formatCompact(d).replace('G', 'B')));",
-        "            series.forEach((s, sIdx) => {",
-        "                g.selectAll(`.trend-bar-${s.key}`).data(data).enter().append('rect').attr('class', 'trend-bar').attr('x', (d) => x(d.dayKey) + x.bandwidth() / 2 - (barWidth * 2 - barGap) / 2 + (barWidth * sIdx) + (barGap * sIdx)).attr('width', barWidth).attr('y', (d) => y(Number(d[s.key]) || 0)).attr('height', (d) => innerHeight - y(Number(d[s.key]) || 0)).attr('fill', s.color).attr('fill-opacity', 0.95).attr('stroke', '#ffffff').attr('stroke-opacity', 0.18).attr('stroke-width', 1);",
+        "            g.append('g').attr('class', 'trend-axis').call(d3.axisLeft(requestY).ticks(5).tickFormat((d) => d3.format(',')(d)));",
+        "            g.append('g').attr('class', 'trend-axis').attr('transform', `translate(${innerWidth},0)`).call(d3.axisRight(tokenY).ticks(5).tickFormat((d) => formatCompact(d).replace('G', 'B')));",
+        "            g.append('text').attr('class', 'trend-axis-label').attr('x', 0).attr('y', -6).text('Requests');",
+        "            g.append('text').attr('class', 'trend-axis-label').attr('x', innerWidth).attr('y', -6).attr('text-anchor', 'end').text('Tokens');",
+        "            const barGroups = g.append('g');",
+        "            series.forEach((s) => {",
+        "                barGroups.selectAll(`.trend-bar-${s.key}`).data(data).enter().append('rect').attr('class', `trend-bar trend-bar-${s.key}`).attr('x', (d) => x(d.dayKey) + barX(s.key)).attr('width', Math.max(3, barX.bandwidth())).attr('y', (d) => tokenY(d[s.key])).attr('height', (d) => innerHeight - tokenY(d[s.key])).attr('rx', 3).attr('fill', s.color).attr('fill-opacity', 0.95);",
         "            });",
-        "            const legend = g.append('g').attr('transform', `translate(${innerWidth - 160}, 4)`);",
-        "            series.forEach((s, idx) => {",
+        "            const requestLine = d3.line().x((d) => x(d.dayKey) + x.bandwidth() / 2).y((d) => requestY(d.requests)).curve(d3.curveCatmullRom.alpha(0.5));",
+        "            g.append('path').datum(data).attr('fill', 'none').attr('stroke', requestColor).attr('stroke-width', 3).attr('stroke-linecap', 'round').attr('stroke-linejoin', 'round').attr('d', requestLine);",
+        "            const requestDots = g.append('g').selectAll('.trend-point').data(data).enter().append('circle').attr('class', 'trend-point').attr('cx', (d) => x(d.dayKey) + x.bandwidth() / 2).attr('cy', (d) => requestY(d.requests)).attr('r', 4).attr('fill', '#ffffff').attr('stroke', requestColor).attr('stroke-width', 2);",
+        "            const legend = g.append('g').attr('transform', `translate(${Math.max(0, innerWidth - 170)}, 4)`);",
+        "            [{ label: 'Requests', color: requestColor }, ...series].forEach((s, idx) => {",
         "                const row = legend.append('g').attr('transform', `translate(0, ${idx * 18})`);",
-        "                row.append('circle').attr('cx', 0).attr('cy', 0).attr('r', 5).attr('fill', s.color);",
-        "                row.append('text').attr('x', 10).attr('y', 4).attr('fill', '#475467').style('font-size', '12px').text(`${s.label}`);",
+        "                if (s.label === 'Requests') {",
+        "                    row.append('line').attr('x1', -2).attr('x2', 8).attr('y1', 0).attr('y2', 0).attr('stroke', s.color).attr('stroke-width', 3).attr('stroke-linecap', 'round');",
+        "                    row.append('circle').attr('cx', 3).attr('cy', 0).attr('r', 3.5).attr('fill', '#ffffff').attr('stroke', s.color).attr('stroke-width', 2);",
+        "                } else {",
+        "                    row.append('rect').attr('x', -2).attr('y', -5).attr('width', 10).attr('height', 10).attr('rx', 2).attr('fill', s.color);",
+        "                }",
+        "                row.append('text').attr('x', 12).attr('y', 4).attr('fill', '#475467').style('font-size', '12px').text(`${s.label}`);",
         "            });",
         "            const hoverLine = g.append('line').attr('stroke', '#98a2b3').attr('stroke-width', 1.5).attr('stroke-dasharray', '4 4').attr('y1', 0).attr('y2', innerHeight).style('opacity', 0);",
         "            const overlay = g.append('rect').attr('width', innerWidth).attr('height', innerHeight).attr('fill', 'transparent').style('cursor', 'crosshair');",
@@ -1299,19 +1368,18 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         "                const idx = indexFromPointer(pointerX);",
         "                const d = data[idx];",
         "                if (!d) return;",
-        "                const barX = x(d.dayKey) + x.bandwidth() / 2;",
-        "                hoverLine.attr('x1', barX).attr('x2', barX).style('opacity', 1);",
+        "                const centerX = x(d.dayKey) + x.bandwidth() / 2;",
+        "                hoverLine.attr('x1', centerX).attr('x2', centerX).style('opacity', 1);",
+        "                requestDots.attr('r', (point, pointIdx) => pointIdx === idx ? 6 : 4);",
         "                tooltip.style.opacity = '1';",
-        "                tooltip.innerHTML = `<strong>${d.label}</strong><span class='trend-value'>Input: ${d3.format(',')(d.prompt_tokens)}</span><span class='trend-value'>Output: ${d3.format(',')(d.completion_tokens)}</span>`;",
-        "                const rect = container.getBoundingClientRect();",
-        "                tooltip.style.left = `${Math.max(18, Math.min(barX + margin.left, innerWidth + margin.left - 18))}px`;",
+        "                tooltip.innerHTML = `<strong>${d.label}</strong><span class='trend-value'>Requests: ${d3.format(',')(d.requests)}</span><span class='trend-value'>Input: ${d3.format(',')(d.prompt_tokens)}</span><span class='trend-value'>Output: ${d3.format(',')(d.completion_tokens)}</span>`;",
+        "                tooltip.style.left = `${Math.max(18, Math.min(centerX + margin.left, innerWidth + margin.left - 18))}px`;",
         "                tooltip.style.top = `${Math.max(6, Math.min(innerHeight + margin.top - 20, event.offsetY + margin.top))}px`;",
         "            }",
-        "            overlay.on('mousemove', showTooltip).on('mouseenter', () => { tooltip.style.opacity = '1'; }).on('mouseleave', () => { tooltip.style.opacity = '0'; hoverLine.style('opacity', 0); });",
+        "            overlay.on('mousemove', showTooltip).on('mouseenter', () => { tooltip.style.opacity = '1'; }).on('mouseleave', () => { tooltip.style.opacity = '0'; hoverLine.style('opacity', 0); requestDots.attr('r', 4); });",
         "        }",
         "        function renderAllTrendCharts() {",
-        "            renderTrendLineChart('requests-chart', 'requests', '#175cd3', 'Requests');",
-        "            renderGroupedTokenTrendChart('tokens-chart', 'Input / Output tokens');",
+        "            renderCombinedTrendChart('combined-trend-chart');",
         "        }",
         "        renderAllTrendCharts();",
         "        let trendResizeTimer = null;",

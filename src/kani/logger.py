@@ -47,6 +47,59 @@ class RoutingLogger:
         cls._log_dir = path
 
     @classmethod
+    def log_decision(
+        cls,
+        text: str,
+        *,
+        tier: str,
+        score: float,
+        confidence: float,
+        signals: list[str] | dict[str, Any] | None = None,
+        agentic_score: float = 0.0,
+        model: str | None = None,
+        provider: str | None = None,
+        profile: str | None = None,
+    ) -> None:
+        """Append a routed decision record with resolved model/provider/profile."""
+        try:
+            cls._log_dir.mkdir(parents=True, exist_ok=True)
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            log_file = cls._log_dir / f"routing-{today}.jsonl"
+
+            if isinstance(signals, dict):
+                method = signals.get("method", {})
+                method_str = (
+                    method.get("raw", "unknown")
+                    if isinstance(method, dict)
+                    else str(method)
+                )
+                signal_payload = {k: v for k, v in signals.items() if k != "method"}
+            else:
+                method_str = "router"
+                signal_payload = signals or []
+
+            record: dict[str, Any] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "prompt_preview": text[:200],
+                "tier": tier,
+                "score": score,
+                "confidence": confidence,
+                "method": method_str,
+                "signals": signal_payload,
+                "agentic_score": agentic_score,
+                "model": model,
+                "provider": provider,
+                "profile": profile,
+            }
+
+            line = json.dumps(record, ensure_ascii=False) + "\n"
+            with _write_lock:
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(line)
+        except Exception as e:
+            log.warning("Failed to write routing decision log: %s", e)
+
+    @classmethod
     def log(cls, text: str, result: ClassificationResult) -> None:
         """Append a classification record to today's JSONL log file."""
         try:

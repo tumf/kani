@@ -220,10 +220,61 @@ def test_render_dashboard_html_shows_profile_filter_controls():
     assert 'value="eco"' in html
     assert "Apply filters" in html
     assert "Clear filter" in html
-    assert 'id="tokens-chart"' in html
-    assert "renderGroupedTokenTrendChart" in html
+    assert 'rel="icon"' in html
+    assert "Latest traffic <strong>" in html
+    assert 'id="combined-trend-chart"' in html
+    assert "renderCombinedTrendChart" in html
+    assert "requests-chart" not in html
+    assert "tokens-chart" not in html
     assert "input-tokens-chart" not in html
     assert "output-tokens-chart" not in html
+
+
+def test_ingest_stderr_proxy_logs_enriches_legacy_routing_profile(
+    configured_dashboard, tmp_path
+):
+    now = datetime.now(timezone.utc)
+    route_ts = (now - timedelta(minutes=2)).replace(microsecond=0)
+    route_iso = route_ts.isoformat()
+
+    with sqlite3.connect(configured_dashboard) as conn:
+        dashboard._insert_routing_record(
+            conn,
+            {
+                "timestamp": route_iso,
+                "tier": "SIMPLE",
+                "score": 0.2,
+                "confidence": 0.93,
+                "agentic_score": 0.1,
+                "model": None,
+                "provider": None,
+                "profile": None,
+                "signals": {},
+            },
+        )
+        conn.commit()
+
+    stderr_log = tmp_path / "log" / "launchd-stderr.log"
+    stderr_log.parent.mkdir(parents=True, exist_ok=True)
+    local_ts = route_ts.astimezone().strftime("%Y-%m-%d %H:%M:%S,%f")
+    stderr_log.write_text(
+        f"{local_ts} [INFO] kani.proxy: ROUTE request_id=req1 model=auto-simple provider=dummy tier=SIMPLE score=0.2000 confidence=0.9300 agentic=0.1000 profile=auto\n",
+        encoding="utf-8",
+    )
+
+    inserted = dashboard.ingest_stderr_proxy_logs()
+
+    assert inserted == 1
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT model, provider, profile FROM routing_logs WHERE timestamp = ?",
+            (route_iso,),
+        ).fetchone()
+
+    assert row["model"] == "auto-simple"
+    assert row["provider"] == "dummy"
+    assert row["profile"] == "auto"
 
 
 def test_dashboard_stats_endpoint_accepts_repeated_profile_query_params(

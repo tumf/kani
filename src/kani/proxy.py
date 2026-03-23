@@ -19,11 +19,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from kani.api_keys import has_keys, validate_key
 from kani.config import KaniConfig, load_config
 from kani.dashboard import (
+    dashboard_needs_stderr_backfill,
     get_dashboard_stats,
     ingest_execution_logs,
     ingest_jsonl_logs,
     ingest_stderr_proxy_logs,
     log_execution_event,
+    recommended_dashboard_ingest_days,
     render_dashboard_html,
 )
 from kani.router import Router, RoutingDecision
@@ -519,9 +521,10 @@ async def route_debug(request: Request):
 @app.get("/dashboard")
 async def dashboard(profiles: list[str] | None = Query(default=None)):
     """HTML dashboard showing routing analytics."""
-    ingest_jsonl_logs(days=30)
-    execution_ingested = ingest_execution_logs(days=30)
-    if execution_ingested == 0:
+    ingest_days = recommended_dashboard_ingest_days(full_days=30, incremental_days=2)
+    ingest_jsonl_logs(days=ingest_days)
+    execution_ingested = ingest_execution_logs(days=ingest_days)
+    if execution_ingested == 0 and dashboard_needs_stderr_backfill():
         ingest_stderr_proxy_logs()
 
     stats = get_dashboard_stats(hours=24, profiles=profiles)
@@ -534,8 +537,12 @@ async def dashboard_stats(
     hours: int = 24, profiles: list[str] | None = Query(default=None)
 ):
     """JSON endpoint for dashboard stats."""
-    ingest_jsonl_logs(days=max(1, hours // 24))
-    execution_ingested = ingest_execution_logs(days=30)
-    if execution_ingested == 0:
+    ingest_days = max(
+        max(1, hours // 24),
+        recommended_dashboard_ingest_days(full_days=30, incremental_days=2),
+    )
+    ingest_jsonl_logs(days=ingest_days)
+    execution_ingested = ingest_execution_logs(days=ingest_days)
+    if execution_ingested == 0 and dashboard_needs_stderr_backfill():
         ingest_stderr_proxy_logs()
     return get_dashboard_stats(hours=hours, profiles=profiles)

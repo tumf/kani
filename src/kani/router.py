@@ -38,6 +38,7 @@ class RoutingDecision(BaseModel):
     confidence: float
     signals: list[str] = Field(default_factory=list)
     agentic_score: float = 0.0
+    profile: str | None = None
     fallbacks: list[FallbackEntry] = Field(default_factory=list)
 
 
@@ -133,9 +134,6 @@ class Router:
 
         provider_cfg = self._lookup_provider(provider_name)
 
-        # --- Resolve env vars in api_key ---
-        api_key = resolve_env(provider_cfg.api_key)
-
         # --- Build fallback entries ---
         fallback_entries: list[FallbackEntry] = []
         for fb_model, fb_provider in tier_cfg.resolve_fallbacks():
@@ -152,16 +150,34 @@ class Router:
                 )
             )
 
+        try:
+            from kani.logger import RoutingLogger
+
+            RoutingLogger.log_decision(
+                prompt,
+                tier=tier,
+                score=score,
+                confidence=confidence,
+                signals=signals,
+                agentic_score=agentic_score,
+                model=model_id,
+                provider=provider_name,
+                profile=profile,
+            )
+        except Exception:
+            log.exception("Failed to persist routing decision log")
+
         return RoutingDecision(
             model=model_id,
             provider=provider_name,
             base_url=provider_cfg.base_url,
-            api_key=api_key,
+            api_key=resolve_env(provider_cfg.api_key),
             tier=tier,
             score=score,
             confidence=confidence,
             signals=signals,
             agentic_score=agentic_score,
+            profile=profile,
             fallbacks=fallback_entries,
         )
 
@@ -255,7 +271,7 @@ class Router:
                     base_url=self.config.llm_classifier.base_url,
                     api_key=self.config.llm_classifier.api_key,
                 )
-            scorer = Scorer(llm_classifier=llm_clf)
+            scorer = Scorer(llm_classifier=llm_clf, enable_routing_log=False)
             result = scorer.classify(prompt)
             tier_val = result.tier
             # Tier may be an enum or string
