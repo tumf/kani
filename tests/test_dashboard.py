@@ -220,6 +220,10 @@ def test_render_dashboard_html_shows_profile_filter_controls():
     assert 'value="eco"' in html
     assert "Apply filters" in html
     assert "Clear filter" in html
+    assert 'id="tokens-chart"' in html
+    assert "renderGroupedTokenTrendChart" in html
+    assert "input-tokens-chart" not in html
+    assert "output-tokens-chart" not in html
 
 
 def test_dashboard_stats_endpoint_accepts_repeated_profile_query_params(
