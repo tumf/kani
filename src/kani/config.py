@@ -136,6 +136,51 @@ class LLMClassifierConfig(BaseModel):
     api_key: str = ""
 
 
+class SyncCompactionConfig(BaseModel):
+    """Configuration for synchronous request-time context compaction."""
+
+    enabled: bool = False
+    threshold_percent: float = 80.0  # compact when prompt uses ≥ threshold_percent of context
+    protect_first_n: int = 1  # number of turns to protect at head
+    protect_last_n: int = 2  # number of turns to protect at tail
+    summary_model: str = ""  # model to use for summarisation; empty = use compress profile
+
+
+class BackgroundPrecompactionConfig(BaseModel):
+    """Configuration for background (async) precompaction."""
+
+    enabled: bool = False
+    trigger_percent: float = 70.0  # start background job when usage crosses this %
+    max_concurrency: int = 2
+    summary_ttl_seconds: int = 3600
+
+
+class SessionConfig(BaseModel):
+    """Configuration for session identity resolution."""
+
+    header_name: str = "X-Kani-Session-Id"
+
+
+class ContextCompactionConfig(BaseModel):
+    """Smart-proxy context compaction sub-configuration."""
+
+    enabled: bool = False
+    sync_compaction: SyncCompactionConfig = Field(default_factory=SyncCompactionConfig)
+    background_precompaction: BackgroundPrecompactionConfig = Field(
+        default_factory=BackgroundPrecompactionConfig
+    )
+    session: SessionConfig = Field(default_factory=SessionConfig)
+    context_window_tokens: int = 128000  # assumed context window for threshold calculation
+
+
+class SmartProxyConfig(BaseModel):
+    """Smart-proxy feature configuration."""
+
+    context_compaction: ContextCompactionConfig = Field(
+        default_factory=ContextCompactionConfig
+    )
+
+
 class KaniConfig(BaseModel):
     """Top-level Kani configuration."""
 
@@ -146,6 +191,7 @@ class KaniConfig(BaseModel):
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     default_profile: str = "auto"
     llm_classifier: LLMClassifierConfig | None = None
+    smart_proxy: SmartProxyConfig = Field(default_factory=SmartProxyConfig)
 
 
 # ---------------------------------------------------------------------------
