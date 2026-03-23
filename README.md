@@ -199,6 +199,78 @@ llm_classifier:
 - Each tier can specify its own `provider` or inherit `default_provider`
 - Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
 
+## Smart-proxy context compaction
+
+kani can optionally reduce context pressure for long-running conversations by compacting oversized message histories before proxying upstream (Phase A) and by pre-computing summaries in the background for reuse on later requests (Phase B).
+
+All compaction behavior is **opt-in and disabled by default**. When disabled or when compaction fails, kani routes and proxies requests unchanged.
+
+### Configuration
+
+Add a `smart_proxy` section to your `config.yaml`:
+
+```yaml
+smart_proxy:
+  context_compaction:
+    enabled: true                        # master switch
+
+    sync_compaction:
+      enabled: true                      # Phase A: compact inline before proxying
+      threshold_percent: 80.0            # compact when prompt ≥ 80% of context window
+      protect_first_n: 1                 # turns to keep at head of conversation
+      protect_last_n: 2                  # turns to keep at tail
+      summary_model: ""                  # empty = use 'compress' profile primary model
+
+    background_precompaction:
+      enabled: true                      # Phase B: pre-compute summaries async
+      trigger_percent: 70.0              # start background job at 70% usage
+      max_concurrency: 2                 # max parallel background jobs
+      summary_ttl_seconds: 3600
+
+    session:
+      header_name: X-Kani-Session-Id    # client header for explicit session binding
+
+    context_window_tokens: 128000        # assumed context window for threshold math
+```
+
+A `compress` routing profile (see `config.example.yaml`) is used as the default summarisation model when `summary_model` is empty.
+
+### Session identity
+
+kani resolves a stable session key in this order:
+
+1. **Explicit header** — value of `session.header_name` (preferred; required for Phase B cache hits)
+2. **Derived** — deterministic hash of model + first/last message content
+
+The resolution mode is surfaced in the `X-Kani-Compaction-Session` response header.
+
+### Operator telemetry
+
+Each routed response includes compaction headers:
+
+| Header | Values | Meaning |
+|--------|--------|---------|
+| `X-Kani-Compaction` | `off` \| `skipped` \| `inline` \| `cached` \| `failed` | What compaction did |
+| `X-Kani-Compaction-Session` | `explicit` \| `derived` | How session was resolved |
+| `X-Kani-Compaction-Saved-Tokens` | integer | Estimated tokens saved |
+
+Structured log fields are emitted at `INFO` level on every compaction decision. Failures are logged at `WARNING` level and never propagate to the client.
+
+### Docker Compose / local deployment
+
+No additional services are required. Compaction state is persisted in SQLite under `$XDG_DATA_HOME/kani/compaction.db` (default: `~/.local/share/kani/compaction.db`). Override with `KANI_DATA_DIR`.
+
+```bash
+# Verify compaction is active after startup:
+curl -s http://localhost:18420/health | jq .
+# Inspect a routed request's compaction outcome:
+curl -v -X POST http://localhost:18420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Kani-Session-Id: my-session-1" \
+  -d '{"model":"kani/auto","messages":[{"role":"user","content":"hello"}]}' \
+  2>&1 | grep -i "x-kani-compaction"
+```
+
 ## LLM escalation
 
 When the embedding classifier is uncertain or unavailable, kani asks a cheap LLM.

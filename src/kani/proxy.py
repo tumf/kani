@@ -17,6 +17,25 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from kani.api_keys import has_keys, validate_key
+from kani.compaction import (
+    BackgroundCompactionWorker,
+    CompactionResult,
+    generate_summary,
+    get_worker,
+    set_worker,
+    try_sync_compaction,
+)
+from kani.compaction_store import (
+    enqueue_summary,
+    get_inflight_summary,
+    get_ready_summary,
+    init_db,
+    mark_stale_summaries,
+    resolve_session_id,
+    save_snapshot,
+    snapshot_hash,
+    upsert_session,
+)
 from kani.config import KaniConfig, load_config
 from kani.dashboard import (
     dashboard_needs_stderr_backfill,
@@ -74,7 +93,27 @@ async def lifespan(app: FastAPI):
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
     logger.info("HTTP connection pool started")
+
+    # Initialise compaction store and background worker
+    assert _config is not None
+    cc = _config.smart_proxy.context_compaction
+    if cc.enabled:
+        try:
+            init_db()
+            max_conc = cc.background_precompaction.max_concurrency
+            set_worker(BackgroundCompactionWorker(max_concurrency=max_conc))
+            logger.info("Smart-proxy context compaction enabled (worker started)")
+        except Exception:
+            logger.exception("Failed to initialise compaction store — disabling compaction")
+
     yield
+
+    # Shutdown background worker
+    worker = get_worker()
+    if worker is not None:
+        await worker.shutdown()
+        set_worker(None)
+
     await _http.aclose()
     logger.info("HTTP connection pool closed")
 
@@ -388,6 +427,246 @@ async def _try_with_fallbacks(
     return result
 
 
+# ── Compaction helpers ────────────────────────────────────────────────────────
+
+
+def _compaction_headers(result: CompactionResult) -> dict[str, str]:
+    """Build X-Kani-Compaction-* response headers from a CompactionResult."""
+    h: dict[str, str] = {
+        "X-Kani-Compaction": result.mode,
+    }
+    if result.session_id:
+        h["X-Kani-Compaction-Session"] = result.session_mode
+    if result.estimated_tokens_saved > 0:
+        h["X-Kani-Compaction-Saved-Tokens"] = str(result.estimated_tokens_saved)
+    return h
+
+
+async def _resolve_compaction(
+    messages: list[dict[str, Any]],
+    request: Request,
+    profile: str | None,
+    request_id: str | None,
+) -> CompactionResult:
+    """Run compaction logic for a routed request.
+
+    Returns a CompactionResult describing the outcome. On any error the result
+    will have mode='failed' and the caller must use the original messages.
+    """
+    assert _config is not None
+    cc = _config.smart_proxy.context_compaction
+    if not cc.enabled:
+        return CompactionResult(mode="off", messages=messages)
+
+    sync_cfg = cc.sync_compaction
+    bg_cfg = cc.background_precompaction
+
+    # Resolve session
+    explicit_header = request.headers.get(cc.session.header_name)
+    try:
+        session_id, session_mode = resolve_session_id(
+            messages,
+            explicit_header=explicit_header,
+            model=str(request.headers.get("x-kani-model", "")),
+        )
+    except Exception as exc:
+        logger.warning("COMPACTION session resolution failed: %s", exc)
+        return CompactionResult(mode="failed", messages=messages, error=str(exc))
+
+    # Estimate token usage
+    from kani.compaction import _estimate_tokens
+
+    prompt_tokens = _estimate_tokens(messages)
+    threshold_tokens = int(cc.context_window_tokens * sync_cfg.threshold_percent / 100)
+    bg_trigger_tokens = int(cc.context_window_tokens * bg_cfg.trigger_percent / 100)
+
+    # Persist session state
+    try:
+        snap_hash_val = snapshot_hash(messages)
+        upsert_session(
+            session_id,
+            profile=profile,
+            request_id=request_id,
+            snapshot_hash=snap_hash_val,
+            prompt_tokens=prompt_tokens,
+        )
+        mark_stale_summaries(session_id, snap_hash_val)
+    except Exception as exc:
+        logger.warning("COMPACTION session persistence failed: %s", exc)
+        snap_hash_val = snapshot_hash(messages)
+
+    # Check for a ready cached summary (Phase B reuse)
+    compacted_messages = messages
+    mode = "skipped"
+    estimated_saved = 0
+
+    if sync_cfg.enabled:
+        try:
+            ready = get_ready_summary(session_id, snap_hash_val)
+        except Exception as exc:
+            logger.warning("COMPACTION cache lookup failed: %s", exc)
+            ready = None
+
+        if ready and ready.get("summary_text"):
+            # Reuse cached summary (Phase B hit)
+            compacted, saved = try_sync_compaction(
+                messages,
+                ready["summary_text"],
+                sync_cfg.protect_first_n,
+                sync_cfg.protect_last_n,
+                prompt_tokens,
+            )
+            if compacted is not None:
+                compacted_messages = compacted
+                mode = "cached"
+                estimated_saved = saved
+                logger.info(
+                    "COMPACTION mode=cached session=%s snap=%s saved=%d request_id=%s",
+                    session_id,
+                    snap_hash_val[:8],
+                    saved,
+                    request_id,
+                )
+            else:
+                mode = "skipped"
+        elif prompt_tokens >= threshold_tokens:
+            # Phase A: generate summary inline
+            summary_model = sync_cfg.summary_model
+            base_url_for_summary = ""
+            api_key_for_summary = ""
+
+            if summary_model:
+                # find a provider that can serve this model
+                dp = _config.providers.get(_config.default_provider)
+                if dp:
+                    base_url_for_summary = dp.base_url.rstrip("/")
+                    api_key_for_summary = dp.api_key or ""
+            else:
+                # use compress profile via default provider
+                compress_profile = _config.profiles.get("compress")
+                if compress_profile:
+                    tier_cfg = compress_profile.tiers.get(
+                        "SIMPLE", next(iter(compress_profile.tiers.values()), None)
+                    )
+                    if tier_cfg:
+                        summary_model = tier_cfg.primary_model_id()
+                dp = _config.providers.get(_config.default_provider)
+                if dp:
+                    base_url_for_summary = dp.base_url.rstrip("/")
+                    api_key_for_summary = dp.api_key or ""
+
+            if summary_model and base_url_for_summary:
+                try:
+                    summary_text = await generate_summary(
+                        messages,
+                        summary_model=summary_model,
+                        base_url=base_url_for_summary,
+                        api_key=api_key_for_summary,
+                        protect_first_n=sync_cfg.protect_first_n,
+                        protect_last_n=sync_cfg.protect_last_n,
+                    )
+                    compacted, saved = try_sync_compaction(
+                        messages,
+                        summary_text,
+                        sync_cfg.protect_first_n,
+                        sync_cfg.protect_last_n,
+                        prompt_tokens,
+                    )
+                    if compacted is not None:
+                        # Persist the generated summary for future reuse
+                        try:
+                            snap_h = save_snapshot(session_id, messages, prompt_tokens)
+                            from kani.compaction_store import update_summary
+
+                            new_id = enqueue_summary(session_id, snap_h)
+                            update_summary(
+                                new_id,
+                                status="ready",
+                                summary_text=summary_text,
+                                estimated_tokens_saved=saved,
+                            )
+                        except Exception as exc:
+                            logger.warning("COMPACTION persist inline summary failed: %s", exc)
+
+                        compacted_messages = compacted
+                        mode = "inline"
+                        estimated_saved = saved
+                        logger.info(
+                            "COMPACTION mode=inline session=%s snap=%s saved=%d request_id=%s",
+                            session_id,
+                            snap_hash_val[:8],
+                            saved,
+                            request_id,
+                        )
+                    else:
+                        mode = "skipped"
+                        logger.info(
+                            "COMPACTION mode=skipped (unsafe structure) session=%s request_id=%s",
+                            session_id,
+                            request_id,
+                        )
+                except Exception as exc:
+                    mode = "failed"
+                    logger.warning(
+                        "COMPACTION inline failed session=%s error=%s request_id=%s",
+                        session_id,
+                        exc,
+                        request_id,
+                    )
+            else:
+                mode = "skipped"
+
+    # Phase B: schedule background precompaction if threshold crossed
+    if bg_cfg.enabled and prompt_tokens >= bg_trigger_tokens:
+        try:
+            if not get_inflight_summary(session_id, snap_hash_val):
+                snap_h = save_snapshot(session_id, messages, prompt_tokens)
+                summary_id = enqueue_summary(session_id, snap_h)
+                worker = get_worker()
+                if worker is not None:
+                    dp = _config.providers.get(_config.default_provider)
+                    bg_model = sync_cfg.summary_model
+                    if not bg_model:
+                        compress_profile = _config.profiles.get("compress")
+                        if compress_profile:
+                            tier_cfg = compress_profile.tiers.get(
+                                "SIMPLE",
+                                next(iter(compress_profile.tiers.values()), None),
+                            )
+                            if tier_cfg:
+                                bg_model = tier_cfg.primary_model_id()
+                    if bg_model and dp:
+                        worker.schedule(
+                            summary_id,
+                            session_id,
+                            snap_h,
+                            messages,
+                            summary_model=bg_model,
+                            base_url=dp.base_url.rstrip("/"),
+                            api_key=dp.api_key or "",
+                            protect_first_n=sync_cfg.protect_first_n,
+                            protect_last_n=sync_cfg.protect_last_n,
+                            original_tokens=prompt_tokens,
+                        )
+                        logger.info(
+                            "COMPACTION_BG queued session=%s snap=%s request_id=%s",
+                            session_id,
+                            snap_h[:8],
+                            request_id,
+                        )
+        except Exception as exc:
+            logger.warning("COMPACTION_BG scheduling failed: %s", exc)
+
+    return CompactionResult(
+        applied=mode in ("inline", "cached"),
+        messages=compacted_messages,
+        mode=mode,
+        session_id=session_id,
+        session_mode=session_mode,
+        estimated_tokens_saved=estimated_saved,
+    )
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 
@@ -425,11 +704,27 @@ async def chat_completions(request: Request):
             profile_name,
         )
 
+        # Smart-proxy context compaction (Phase A + B)
+        compaction_result = await _resolve_compaction(
+            messages, request, profile_name, request_id
+        )
+        if compaction_result.applied:
+            body = dict(body)
+            body["messages"] = compaction_result.messages
+
         # Replace the model field with the actual model name
         body["model"] = decision.model
-        return await _try_with_fallbacks(
+        response = await _try_with_fallbacks(
             body, decision, profile_name, request_id=request_id
         )
+
+        # Attach compaction headers
+        compaction_hdrs = _compaction_headers(compaction_result)
+        if compaction_hdrs:
+            for k, v in compaction_hdrs.items():
+                response.headers[k] = v
+
+        return response
 
     else:
         # ── Pass-through to default provider ──────────────────────────────

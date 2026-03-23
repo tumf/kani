@@ -28,6 +28,29 @@ default_profile: auto
 #     api_key: "${OPENROUTER_API_KEY}"
 
 # ---------------------------------------------------------------------------
+# Smart-proxy context compaction (optional — all features disabled by default)
+# ---------------------------------------------------------------------------
+# Uncomment and adjust to enable inline and/or background context compaction.
+#
+# smart_proxy:
+#   context_compaction:
+#     enabled: true
+#     sync_compaction:
+#       enabled: true
+#       threshold_percent: 80.0    # compact when prompt ≥ 80% of context window
+#       protect_first_n: 1
+#       protect_last_n: 2
+#       summary_model: ""          # empty = use 'compress' profile primary model
+#     background_precompaction:
+#       enabled: true
+#       trigger_percent: 70.0
+#       max_concurrency: 2
+#       summary_ttl_seconds: 3600
+#     session:
+#       header_name: X-Kani-Session-Id
+#     context_window_tokens: 128000
+
+# ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
 providers:
