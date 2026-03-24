@@ -212,6 +212,7 @@ def _log_usage(
     *,
     decision: RoutingDecision | None = None,
     request_id: str | None = None,
+    compaction_result: CompactionResult | None = None,
 ) -> None:
     """Log token usage from an upstream response."""
     if not usage:
@@ -250,6 +251,16 @@ def _log_usage(
         completion_tokens=completion,
         total_tokens=total,
         elapsed_ms=elapsed_ms,
+        compaction_mode=compaction_result.mode if compaction_result else None,
+        compaction_tokens_saved=compaction_result.estimated_tokens_saved
+        if compaction_result
+        else 0,
+        compaction_original_tokens=compaction_result.original_tokens
+        if compaction_result
+        else 0,
+        compaction_session_id=compaction_result.session_id
+        if compaction_result
+        else None,
     )
 
 
@@ -262,6 +273,7 @@ async def _proxy_upstream(
     *,
     actual_provider: str | None = None,
     request_id: str | None = None,
+    compaction_result: CompactionResult | None = None,
 ) -> StreamingResponse | JSONResponse:
     """Forward a chat-completion request to the upstream provider."""
     assert _http is not None
@@ -325,6 +337,7 @@ async def _proxy_upstream(
                                         elapsed,
                                         decision=decision,
                                         request_id=request_id,
+                                        compaction_result=compaction_result,
                                     )
                             except (json.JSONDecodeError, TypeError):
                                 pass
@@ -358,6 +371,7 @@ async def _proxy_upstream(
                 elapsed,
                 decision=decision,
                 request_id=request_id,
+                compaction_result=compaction_result,
             )
             return JSONResponse(
                 content=resp_data,
@@ -388,6 +402,7 @@ async def _try_with_fallbacks(
     profile: str | None = None,
     *,
     request_id: str | None = None,
+    compaction_result: CompactionResult | None = None,
 ) -> StreamingResponse | JSONResponse:
     """Try primary, then fallbacks on failure."""
     # Try primary
@@ -399,6 +414,7 @@ async def _try_with_fallbacks(
         profile=profile,
         actual_provider=decision.provider,
         request_id=request_id,
+        compaction_result=compaction_result,
     )
 
     if not _is_retryable_error(result):
@@ -424,6 +440,7 @@ async def _try_with_fallbacks(
             profile=profile,
             actual_provider=fb.provider,
             request_id=request_id,
+            compaction_result=compaction_result,
         )
         if not _is_retryable_error(result):
             return result
@@ -528,10 +545,12 @@ async def _resolve_compaction(
                 mode = "cached"
                 estimated_saved = saved
                 logger.info(
-                    "COMPACTION mode=cached session=%s snap=%s saved=%d request_id=%s",
+                    "COMPACTION mode=cached session=%s snap=%s saved=%d original_tokens=%d compacted_tokens=%d request_id=%s",
                     session_id,
                     snap_hash_val[:8],
                     saved,
+                    prompt_tokens,
+                    max(0, prompt_tokens - saved),
                     request_id,
                 )
             else:
@@ -689,17 +708,21 @@ async def _resolve_compaction(
                         mode = "inline"
                         estimated_saved = saved
                         logger.info(
-                            "COMPACTION mode=inline session=%s snap=%s saved=%d request_id=%s",
+                            "COMPACTION mode=inline session=%s snap=%s saved=%d original_tokens=%d compacted_tokens=%d request_id=%s",
                             session_id,
                             snap_hash_val[:8],
                             saved,
+                            prompt_tokens,
+                            max(0, prompt_tokens - saved),
                             request_id,
                         )
                     else:
                         mode = "skipped"
                         logger.info(
-                            "COMPACTION mode=skipped (unsafe structure) session=%s request_id=%s",
+                            "COMPACTION mode=skipped (unsafe structure) session=%s original_tokens=%d compacted_tokens=%d request_id=%s",
                             session_id,
+                            prompt_tokens,
+                            prompt_tokens,
                             request_id,
                         )
                 except Exception as exc:
@@ -789,6 +812,7 @@ async def _resolve_compaction(
         session_id=session_id,
         session_mode=session_mode,
         estimated_tokens_saved=estimated_saved,
+        original_tokens=prompt_tokens,
     )
 
 
@@ -840,7 +864,11 @@ async def chat_completions(request: Request):
         # Replace the model field with the actual model name
         body["model"] = decision.model
         response = await _try_with_fallbacks(
-            body, decision, profile_name, request_id=request_id
+            body,
+            decision,
+            profile_name,
+            request_id=request_id,
+            compaction_result=compaction_result,
         )
 
         # Attach compaction headers

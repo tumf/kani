@@ -88,6 +88,16 @@ def _init_dashboard_db() -> None:
         _ensure_column(conn, "routing_logs", "profile", "TEXT")
         _ensure_column(conn, "routing_logs", "signals", "TEXT")
 
+        # Compaction metrics columns (added in add-compaction-dashboard-metrics)
+        _ensure_column(conn, "execution_logs", "compaction_mode", "TEXT")
+        _ensure_column(
+            conn, "execution_logs", "compaction_tokens_saved", "INTEGER DEFAULT 0"
+        )
+        _ensure_column(
+            conn, "execution_logs", "compaction_original_tokens", "INTEGER DEFAULT 0"
+        )
+        _ensure_column(conn, "execution_logs", "compaction_session_id", "TEXT")
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_routing_timestamp ON routing_logs(timestamp)"
         )
@@ -296,9 +306,13 @@ def _insert_execution_record(conn: sqlite3.Connection, record: dict[str, Any]) -
             prompt_tokens,
             completion_tokens,
             total_tokens,
-            elapsed_ms
+            elapsed_ms,
+            compaction_mode,
+            compaction_tokens_saved,
+            compaction_original_tokens,
+            compaction_session_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record["timestamp"],
@@ -316,6 +330,10 @@ def _insert_execution_record(conn: sqlite3.Connection, record: dict[str, Any]) -
             float(record["elapsed_ms"])
             if record.get("elapsed_ms") is not None
             else None,
+            record.get("compaction_mode"),
+            int(record.get("compaction_tokens_saved") or 0),
+            int(record.get("compaction_original_tokens") or 0),
+            record.get("compaction_session_id"),
         ),
     )
     return conn.total_changes - before
@@ -380,6 +398,10 @@ def log_execution_event(
     completion_tokens: int = 0,
     total_tokens: int = 0,
     elapsed_ms: float | None = None,
+    compaction_mode: str | None = None,
+    compaction_tokens_saved: int = 0,
+    compaction_original_tokens: int = 0,
+    compaction_session_id: str | None = None,
 ) -> None:
     """Append a structured execution record for dashboard analytics."""
     try:
@@ -405,6 +427,10 @@ def log_execution_event(
             "completion_tokens": int(completion_tokens or 0),
             "total_tokens": int(total_tokens or 0),
             "elapsed_ms": float(elapsed_ms) if elapsed_ms is not None else None,
+            "compaction_mode": compaction_mode,
+            "compaction_tokens_saved": int(compaction_tokens_saved or 0),
+            "compaction_original_tokens": int(compaction_original_tokens or 0),
+            "compaction_session_id": compaction_session_id,
         }
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -670,7 +696,9 @@ def _window_summary(
             COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
             COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
             COALESCE(SUM(total_tokens), 0) AS total_tokens,
-            ROUND(AVG(elapsed_ms), 1) AS avg_elapsed_ms
+            ROUND(AVG(elapsed_ms), 1) AS avg_elapsed_ms,
+            COALESCE(SUM(CASE WHEN compaction_mode IN ('inline', 'cached') THEN 1 ELSE 0 END), 0) AS compaction_requests,
+            COALESCE(SUM(compaction_tokens_saved), 0) AS compaction_tokens_saved
         FROM execution_logs
         WHERE timestamp > ?
         {profile_sql}
@@ -693,6 +721,8 @@ def _window_summary(
         "total_tokens": execution_row["total_tokens"] or 0,
         "avg_elapsed_ms": execution_row["avg_elapsed_ms"],
         "usage_coverage": coverage,
+        "compaction_requests": execution_row["compaction_requests"] or 0,
+        "compaction_tokens_saved": execution_row["compaction_tokens_saved"] or 0,
     }
 
 
@@ -755,7 +785,9 @@ def _daily_trends(
             COUNT(*) AS execution_requests,
             COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
             COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
+            COALESCE(SUM(total_tokens), 0) AS total_tokens,
+            COALESCE(SUM(CASE WHEN compaction_mode IN ('inline', 'cached') THEN 1 ELSE 0 END), 0) AS compaction_requests,
+            COALESCE(SUM(compaction_tokens_saved), 0) AS compaction_tokens_saved
         FROM execution_logs
         WHERE timestamp >= ?
           {profile_sql}
@@ -782,6 +814,8 @@ def _daily_trends(
                 "prompt_tokens": execution.get("prompt_tokens", 0),
                 "completion_tokens": execution.get("completion_tokens", 0),
                 "total_tokens": execution.get("total_tokens", 0),
+                "compaction_requests": execution.get("compaction_requests", 0),
+                "compaction_tokens_saved": execution.get("compaction_tokens_saved", 0),
             }
         )
     return data
@@ -1024,6 +1058,8 @@ def _render_window_cards(windows: dict[str, dict[str, Any]]) -> str:
                     <div><span>Total tokens</span><strong>{escape(_fmt_int(item["total_tokens"]))}</strong></div>
                     <div><span>Avg latency</span><strong>{escape(_fmt_float(item["avg_elapsed_ms"]))} ms</strong></div>
                     <div><span>Usage coverage</span><strong>{escape(_fmt_percent(item["usage_coverage"]))}</strong></div>
+                    <div><span>Compacted reqs</span><strong>{escape(_fmt_int(item.get("compaction_requests", 0)))}</strong></div>
+                    <div><span>Saved tokens</span><strong>{escape(_fmt_int(item.get("compaction_tokens_saved", 0)))}</strong></div>
                 </div>
             </div>
             """
@@ -1080,10 +1116,21 @@ def _render_daily_table(rows: list[dict[str, Any]]) -> str:
                 escape(_fmt_int(row["prompt_tokens"])),
                 escape(_fmt_int(row["completion_tokens"])),
                 escape(_fmt_int(row["total_tokens"])),
+                escape(_fmt_int(row.get("compaction_requests", 0))),
+                escape(_fmt_int(row.get("compaction_tokens_saved", 0))),
             ]
         )
     return _render_simple_table(
-        ["Day", "Routed", "Usage rows", "Input", "Output", "Total"],
+        [
+            "Day",
+            "Routed",
+            "Usage rows",
+            "Input",
+            "Output",
+            "Total",
+            "Compacted",
+            "Saved tokens",
+        ],
         table_rows,
     )
 
