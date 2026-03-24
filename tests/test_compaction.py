@@ -103,7 +103,9 @@ class TestSummaryLifecycle:
         assert get_inflight_summary("sess1", snap_h) is True
         assert get_ready_summary("sess1", snap_h) is None
 
-        update_summary(sid, status="ready", summary_text="summary here", estimated_tokens_saved=100)
+        update_summary(
+            sid, status="ready", summary_text="summary here", estimated_tokens_saved=100
+        )
 
         assert get_inflight_summary("sess1", snap_h) is False
         ready = get_ready_summary("sess1", snap_h)
@@ -112,7 +114,11 @@ class TestSummaryLifecycle:
         assert ready["estimated_tokens_saved"] == 100
 
     def test_no_duplicate_inflight(self):
-        from kani.compaction_store import enqueue_summary, get_inflight_summary, save_snapshot
+        from kani.compaction_store import (
+            enqueue_summary,
+            get_inflight_summary,
+            save_snapshot,
+        )
 
         msgs = [{"role": "user", "content": "hi"}]
         snap_h = save_snapshot("sess", msgs)
@@ -193,9 +199,94 @@ class TestCompactMessages:
 
         msgs = self._msgs(20)
         original_tokens = _estimate_tokens(msgs)
-        compacted, saved = try_sync_compaction(msgs, "short summary", 1, 2, original_tokens)
+        compacted, saved = try_sync_compaction(
+            msgs, "short summary", 1, 2, original_tokens
+        )
         assert compacted is not None
         assert saved > 0
+
+
+class TestComputeSummaryMaxTokens:
+    """Tests for _compute_summary_max_tokens boundary conditions."""
+
+    def test_default_ratio_normal_range(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 1000 tokens * 0.25 = 250, within [128, 1024]
+        result = _compute_summary_max_tokens(1000, 0.25, 128, 1024)
+        assert result == 250
+
+    def test_short_middle_hits_floor(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 100 tokens * 0.25 = 25, clamped to floor 128
+        result = _compute_summary_max_tokens(100, 0.25, 128, 1024)
+        assert result == 128
+
+    def test_long_middle_hits_ceiling(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 10000 tokens * 0.25 = 2500, clamped to ceiling 1024
+        result = _compute_summary_max_tokens(10000, 0.25, 128, 1024)
+        assert result == 1024
+
+    def test_custom_ratio_override(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 2000 tokens * 0.5 = 1000, within [128, 1024]
+        result = _compute_summary_max_tokens(2000, 0.5, 128, 1024)
+        assert result == 1000
+
+    def test_floor_equals_ceiling_returns_floor(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        result = _compute_summary_max_tokens(500, 0.25, 256, 256)
+        assert result == 256
+
+    def test_summary_max_tokens_used_in_generate_summary(self):
+        """generate_summary passes computed max_tokens to the HTTP payload."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from kani.compaction import generate_summary
+
+        captured = {}
+
+        async def fake_post(url, *, json, headers):
+            captured["max_tokens"] = json["max_tokens"]
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"choices": [{"message": {"content": "summary"}}]}
+            return resp
+
+        async def run():
+            msgs = [
+                {"role": "user", "content": "a " * 400},  # ~100 tokens middle
+                {"role": "assistant", "content": "b " * 400},
+                {"role": "user", "content": "last"},
+            ]
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client_cls.return_value.__aenter__ = AsyncMock(
+                    return_value=mock_client
+                )
+                mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = fake_post
+                return await generate_summary(
+                    msgs,
+                    summary_model="test-model",
+                    base_url="http://localhost:9999",
+                    api_key="",
+                    protect_first_n=0,
+                    protect_last_n=1,
+                    summary_ratio=0.25,
+                    min_summary_tokens=128,
+                    max_summary_tokens=1024,
+                )
+
+        asyncio.run(run())
+        # The middle is short, so max_tokens should be at least the floor
+        assert captured["max_tokens"] >= 128
+        assert captured["max_tokens"] <= 1024
 
 
 class TestEstimateTokens:
@@ -223,12 +314,17 @@ class TestCompactionConfig:
         cfg = KaniConfig()
         assert cfg.smart_proxy.context_compaction.enabled is False
         assert cfg.smart_proxy.context_compaction.sync_compaction.enabled is False
-        assert cfg.smart_proxy.context_compaction.background_precompaction.enabled is False
+        assert (
+            cfg.smart_proxy.context_compaction.background_precompaction.enabled is False
+        )
 
     def test_yaml_round_trip(self):
         from kani.config import load_config
 
-        import tempfile, textwrap, os
+        import tempfile
+        import textwrap
+        import os
+
         yaml_text = textwrap.dedent("""\
             default_provider: dummy
             providers:
@@ -354,20 +450,29 @@ profiles:
     )
     monkeypatch.setenv("KANI_DATA_DIR", str(tmp_path / "data"))
     from kani.proxy import app, configure
+
     configure(str(cfg))
     _mock_upstream(monkeypatch)
 
     with TestClient(app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "kani/auto", "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "kani/auto",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
     assert resp.status_code == 200
     # No compaction headers when disabled
-    assert "X-Kani-Compaction" not in resp.headers or resp.headers.get("X-Kani-Compaction") == "off"
+    assert (
+        "X-Kani-Compaction" not in resp.headers
+        or resp.headers.get("X-Kani-Compaction") == "off"
+    )
 
 
-def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, compaction_config):
+def test_compaction_headers_present_when_enabled(
+    tmp_path: Path, monkeypatch, compaction_config
+):
     """Compaction enabled → X-Kani-Compaction header present."""
     from fastapi.testclient import TestClient
     from kani.proxy import app, configure
@@ -376,6 +481,7 @@ def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, co
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
 
     import kani.compaction_store as store
+
     store.set_db_path(tmp_path / "data" / "compaction.db")
     store.init_db()
 
@@ -385,7 +491,10 @@ def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, co
     with TestClient(app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "kani/auto", "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "kani/auto",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
 
     assert resp.status_code == 200
