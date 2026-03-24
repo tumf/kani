@@ -303,6 +303,68 @@ class TestEstimateTokens:
         long = [{"role": "user", "content": "hi " * 200}]
         assert _estimate_tokens(long) > _estimate_tokens(short)
 
+    def test_english_text_with_known_model(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello, world! This is a test sentence."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        # tiktoken should produce a reasonable token count (not chars/4)
+        assert count > 0
+
+    def test_cjk_text_uses_tiktoken(self):
+        from kani.compaction import _estimate_tokens
+
+        # Japanese text: each character is typically 1-2 tokens with tiktoken
+        # vs. chars/4 which would massively undercount
+        msgs = [
+            {
+                "role": "user",
+                "content": "日本語のテストです。これは文脈の圧縮をテストしています。",
+            }
+        ]
+        count_tiktoken = _estimate_tokens(msgs, model="gpt-4o")
+        # chars/4 fallback estimate
+        total_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+        chars_estimate = total_chars // 4
+        # tiktoken count should be higher than chars/4 for CJK
+        assert count_tiktoken > chars_estimate
+
+    def test_mixed_cjk_english(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello 世界! This is mixed text 日本語."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        assert count > 0
+
+    def test_unknown_model_falls_back_to_cl100k_base(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        # Clear cache to ensure fresh resolution
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "test content"}]
+        # Unknown model should not raise and should return a positive count
+        count = _estimate_tokens(msgs, model="unknown-model-xyz-12345")
+        assert count > 0
+
+    def test_no_model_uses_cl100k_base(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "test content"}]
+        count = _estimate_tokens(msgs, model=None)
+        assert count > 0
+
+    def test_encoder_cached_on_second_call(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "hello"}]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert "gpt-4o" in _encoder_cache
+        # Second call hits cache (enc object is same)
+        enc_first = _encoder_cache["gpt-4o"]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert _encoder_cache["gpt-4o"] is enc_first
+
 
 # ── config model tests ────────────────────────────────────────────────────────
 

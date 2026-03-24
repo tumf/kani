@@ -449,6 +449,7 @@ async def _resolve_compaction(
     request: Request,
     profile: str | None,
     request_id: str | None,
+    model: str | None = None,
 ) -> CompactionResult:
     """Run compaction logic for a routed request.
 
@@ -478,7 +479,7 @@ async def _resolve_compaction(
     # Estimate token usage
     from kani.compaction import _estimate_tokens
 
-    prompt_tokens = _estimate_tokens(messages)
+    prompt_tokens = _estimate_tokens(messages, model)
     threshold_tokens = int(cc.context_window_tokens * sync_cfg.threshold_percent / 100)
     bg_trigger_tokens = int(cc.context_window_tokens * bg_cfg.trigger_percent / 100)
 
@@ -517,6 +518,7 @@ async def _resolve_compaction(
                 sync_cfg.protect_first_n,
                 sync_cfg.protect_last_n,
                 prompt_tokens,
+                model,
             )
             if compacted is not None:
                 compacted_messages = compacted
@@ -576,6 +578,7 @@ async def _resolve_compaction(
                         sync_cfg.protect_first_n,
                         sync_cfg.protect_last_n,
                         prompt_tokens,
+                        model,
                     )
                     if compacted is not None:
                         # Persist the generated summary for future reuse
@@ -654,6 +657,7 @@ async def _resolve_compaction(
                             protect_first_n=sync_cfg.protect_first_n,
                             protect_last_n=sync_cfg.protect_last_n,
                             original_tokens=prompt_tokens,
+                            model=model,
                             summary_ratio=sync_cfg.summary_ratio,
                             min_summary_tokens=sync_cfg.min_summary_tokens,
                             max_summary_tokens=sync_cfg.max_summary_tokens,
@@ -716,7 +720,7 @@ async def chat_completions(request: Request):
 
         # Smart-proxy context compaction (Phase A + B)
         compaction_result = await _resolve_compaction(
-            messages, request, profile_name, request_id
+            messages, request, profile_name, request_id, model=decision.model
         )
         if compaction_result.applied:
             body = dict(body)
