@@ -20,6 +20,7 @@ from kani.api_keys import has_keys, validate_key
 from kani.compaction import (
     BackgroundCompactionWorker,
     CompactionResult,
+    _merge_summaries,
     generate_summary,
     get_worker,
     set_worker,
@@ -28,7 +29,9 @@ from kani.compaction import (
 from kani.compaction_store import (
     enqueue_summary,
     get_inflight_summary,
+    get_latest_ready_summary_for_session,
     get_ready_summary,
+    get_snapshot,
     init_db,
     mark_stale_summaries,
     resolve_session_id,
@@ -449,6 +452,7 @@ async def _resolve_compaction(
     request: Request,
     profile: str | None,
     request_id: str | None,
+    model: str | None = None,
 ) -> CompactionResult:
     """Run compaction logic for a routed request.
 
@@ -478,7 +482,7 @@ async def _resolve_compaction(
     # Estimate token usage
     from kani.compaction import _estimate_tokens
 
-    prompt_tokens = _estimate_tokens(messages)
+    prompt_tokens = _estimate_tokens(messages, model)
     threshold_tokens = int(cc.context_window_tokens * sync_cfg.threshold_percent / 100)
     bg_trigger_tokens = int(cc.context_window_tokens * bg_cfg.trigger_percent / 100)
 
@@ -517,6 +521,7 @@ async def _resolve_compaction(
                 sync_cfg.protect_first_n,
                 sync_cfg.protect_last_n,
                 prompt_tokens,
+                model,
             )
             if compacted is not None:
                 compacted_messages = compacted
@@ -551,36 +556,129 @@ async def _resolve_compaction(
 
             if summary_model and base_url_for_summary:
                 try:
-                    summary_text = await generate_summary(
-                        messages,
-                        summary_model=summary_model,
-                        base_url=base_url_for_summary,
-                        api_key=api_key_for_summary,
-                        protect_first_n=sync_cfg.protect_first_n,
-                        protect_last_n=sync_cfg.protect_last_n,
-                        summary_ratio=sync_cfg.summary_ratio,
-                        min_summary_tokens=sync_cfg.min_summary_tokens,
-                        max_summary_tokens=sync_cfg.max_summary_tokens,
-                    )
-                    compacted, saved = try_sync_compaction(
-                        messages,
-                        summary_text,
-                        sync_cfg.protect_first_n,
-                        sync_cfg.protect_last_n,
-                        prompt_tokens,
-                    )
+                    # Look up prior summary for incremental path
+                    prior_summary_row = get_latest_ready_summary_for_session(session_id)
+                    prior_text: str | None = None
+                    prior_covered: int = 0
+                    new_covered: int = 0
+
+                    if prior_summary_row and prior_summary_row.get("summary_text"):
+                        # Validate prior summary still applies to current messages
+                        prior_snap = get_snapshot(prior_summary_row["snapshot_hash"])
+                        if prior_snap:
+                            import json as _json
+
+                            prior_msgs = _json.loads(prior_snap["messages_json"])
+                            prior_covered_raw = (
+                                prior_summary_row.get("covered_message_count", 0) or 0
+                            )
+                            n = len(messages)
+                            has_system = (
+                                messages[0].get("role") == "system"
+                                if messages
+                                else False
+                            )
+                            head_end = sync_cfg.protect_first_n + (
+                                1 if has_system else 0
+                            )
+                            covered_end = head_end + prior_covered_raw
+                            # Validate: covered prefix of prior matches current messages
+                            if (
+                                covered_end <= len(prior_msgs)
+                                and covered_end <= n
+                                and prior_msgs[:covered_end] == messages[:covered_end]
+                            ):
+                                prior_text = prior_summary_row["summary_text"]
+                                prior_covered = prior_covered_raw
+
+                    if prior_text is not None:
+                        # Incremental path: summarize only the delta
+                        n = len(messages)
+                        has_system = (
+                            messages[0].get("role") == "system" if messages else False
+                        )
+                        head_end = sync_cfg.protect_first_n + (1 if has_system else 0)
+                        tail_start = n - sync_cfg.protect_last_n
+                        delta_messages = messages[head_end + prior_covered : tail_start]
+
+                        if not delta_messages:
+                            # No new messages since last summary — reuse prior
+                            delta_summary = ""
+                            final_summary = prior_text
+                            new_covered = prior_covered
+                        else:
+                            delta_summary = await generate_summary(
+                                delta_messages + messages[tail_start:],
+                                summary_model=summary_model,
+                                base_url=base_url_for_summary,
+                                api_key=api_key_for_summary,
+                                protect_first_n=0,
+                                protect_last_n=sync_cfg.protect_last_n,
+                                summary_ratio=sync_cfg.summary_ratio,
+                                min_summary_tokens=sync_cfg.min_summary_tokens,
+                                max_summary_tokens=sync_cfg.max_summary_tokens,
+                            )
+                            final_summary = await _merge_summaries(
+                                prior_text,
+                                delta_summary,
+                                sync_cfg.merge_threshold,
+                                summary_model=summary_model,
+                                base_url=base_url_for_summary,
+                                api_key=api_key_for_summary,
+                            )
+                            new_covered = max(0, tail_start - head_end)
+
+                        compacted, saved = try_sync_compaction(
+                            messages,
+                            final_summary,
+                            sync_cfg.protect_first_n,
+                            sync_cfg.protect_last_n,
+                            prompt_tokens,
+                            model,
+                        )
+                        summary_text = final_summary
+                    else:
+                        # Full single-pass (no prior summary)
+                        summary_text = await generate_summary(
+                            messages,
+                            summary_model=summary_model,
+                            base_url=base_url_for_summary,
+                            api_key=api_key_for_summary,
+                            protect_first_n=sync_cfg.protect_first_n,
+                            protect_last_n=sync_cfg.protect_last_n,
+                            summary_ratio=sync_cfg.summary_ratio,
+                            min_summary_tokens=sync_cfg.min_summary_tokens,
+                            max_summary_tokens=sync_cfg.max_summary_tokens,
+                        )
+                        n = len(messages)
+                        has_system = (
+                            messages[0].get("role") == "system" if messages else False
+                        )
+                        head_end = sync_cfg.protect_first_n + (1 if has_system else 0)
+                        tail_start = n - sync_cfg.protect_last_n
+                        new_covered = max(0, tail_start - head_end)
+                        compacted, saved = try_sync_compaction(
+                            messages,
+                            summary_text,
+                            sync_cfg.protect_first_n,
+                            sync_cfg.protect_last_n,
+                            prompt_tokens,
+                            model,
+                        )
+
                     if compacted is not None:
                         # Persist the generated summary for future reuse
                         try:
                             snap_h = save_snapshot(session_id, messages, prompt_tokens)
                             from kani.compaction_store import update_summary
 
-                            new_id = enqueue_summary(session_id, snap_h)
+                            new_id = enqueue_summary(session_id, snap_h, new_covered)
                             update_summary(
                                 new_id,
                                 status="ready",
                                 summary_text=summary_text,
                                 estimated_tokens_saved=saved,
+                                covered_message_count=new_covered,
                             )
                         except Exception as exc:
                             logger.warning(
@@ -620,6 +718,33 @@ async def _resolve_compaction(
         try:
             if not get_inflight_summary(session_id, snap_hash_val):
                 snap_h = save_snapshot(session_id, messages, prompt_tokens)
+                # Look up prior summary for incremental background compaction
+                bg_prior_row = get_latest_ready_summary_for_session(session_id)
+                bg_prior_text: str | None = None
+                bg_prior_covered: int = 0
+                if bg_prior_row and bg_prior_row.get("summary_text"):
+                    bg_prior_snap = get_snapshot(bg_prior_row["snapshot_hash"])
+                    if bg_prior_snap:
+                        import json as _json2
+
+                        bg_prior_msgs = _json2.loads(bg_prior_snap["messages_json"])
+                        bg_covered_raw = (
+                            bg_prior_row.get("covered_message_count", 0) or 0
+                        )
+                        n = len(messages)
+                        has_system = (
+                            messages[0].get("role") == "system" if messages else False
+                        )
+                        head_end = sync_cfg.protect_first_n + (1 if has_system else 0)
+                        covered_end = head_end + bg_covered_raw
+                        if (
+                            covered_end <= len(bg_prior_msgs)
+                            and covered_end <= n
+                            and bg_prior_msgs[:covered_end] == messages[:covered_end]
+                        ):
+                            bg_prior_text = bg_prior_row["summary_text"]
+                            bg_prior_covered = bg_covered_raw
+
                 summary_id = enqueue_summary(session_id, snap_h)
                 worker = get_worker()
                 if worker is not None:
@@ -639,15 +764,20 @@ async def _resolve_compaction(
                         protect_first_n=sync_cfg.protect_first_n,
                         protect_last_n=sync_cfg.protect_last_n,
                         original_tokens=prompt_tokens,
+                        merge_threshold=sync_cfg.merge_threshold,
+                        prior_summary=bg_prior_text,
+                        prior_covered_count=bg_prior_covered,
+                        model=model,
                         summary_ratio=sync_cfg.summary_ratio,
                         min_summary_tokens=sync_cfg.min_summary_tokens,
                         max_summary_tokens=sync_cfg.max_summary_tokens,
                     )
                     logger.info(
-                        "COMPACTION_BG queued session=%s snap=%s request_id=%s",
+                        "COMPACTION_BG queued session=%s snap=%s request_id=%s incremental=%s",
                         session_id,
                         snap_h[:8],
                         request_id,
+                        bg_prior_text is not None,
                     )
         except Exception as exc:
             logger.warning("COMPACTION_BG scheduling failed: %s", exc)
@@ -701,7 +831,7 @@ async def chat_completions(request: Request):
 
         # Smart-proxy context compaction (Phase A + B)
         compaction_result = await _resolve_compaction(
-            messages, request, profile_name, request_id
+            messages, request, profile_name, request_id, model=decision.model
         )
         if compaction_result.applied:
             body = dict(body)

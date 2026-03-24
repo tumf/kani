@@ -148,6 +148,7 @@ class SyncCompactionConfig(BaseModel):
     summary_profile: str = (
         ""  # routing profile for summary model resolution; empty = use default_profile
     )
+    merge_threshold: int = 768  # token threshold for LLM merge vs concatenation
     summary_ratio: float = (
         0.25  # summary max_tokens = middle_tokens * ratio (before clamping)
     )

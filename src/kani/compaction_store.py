@@ -73,12 +73,20 @@ def init_db() -> None:
                 status TEXT NOT NULL DEFAULT 'queued',
                 summary_text TEXT,
                 estimated_tokens_saved INTEGER DEFAULT 0,
+                covered_message_count INTEGER DEFAULT 0,
                 error_message TEXT,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             );
             """
         )
+        # Migration: add covered_message_count to existing databases
+        try:
+            conn.execute(
+                "ALTER TABLE compaction_summaries ADD COLUMN covered_message_count INTEGER DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
 
 
 # ── Session helpers ───────────────────────────────────────────────────────────
@@ -181,6 +189,20 @@ def get_ready_summary(session_id: str, snap_hash: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_latest_ready_summary_for_session(session_id: str) -> dict[str, Any] | None:
+    """Return the most recent ready summary for the session, regardless of snapshot hash."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM compaction_summaries
+            WHERE session_id = ? AND status = 'ready'
+            ORDER BY updated_at DESC LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def get_inflight_summary(session_id: str, snap_hash: str) -> bool:
     """Return True if there is already a queued or running summary for this snapshot."""
     with _connect() as conn:
@@ -195,7 +217,9 @@ def get_inflight_summary(session_id: str, snap_hash: str) -> bool:
     return row is not None
 
 
-def enqueue_summary(session_id: str, snap_hash: str) -> str:
+def enqueue_summary(
+    session_id: str, snap_hash: str, covered_message_count: int = 0
+) -> str:
     """Insert a queued summary job and return its summary_id."""
     import uuid
 
@@ -205,10 +229,11 @@ def enqueue_summary(session_id: str, snap_hash: str) -> str:
         conn.execute(
             """
             INSERT INTO compaction_summaries
-                (summary_id, session_id, snapshot_hash, status, created_at, updated_at)
-            VALUES (?, ?, ?, 'queued', ?, ?)
+                (summary_id, session_id, snapshot_hash, status, covered_message_count,
+                 created_at, updated_at)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?)
             """,
-            (sid, session_id, snap_hash, now, now),
+            (sid, session_id, snap_hash, covered_message_count, now, now),
         )
     return sid
 
@@ -219,6 +244,7 @@ def update_summary(
     status: str,
     summary_text: str | None = None,
     estimated_tokens_saved: int = 0,
+    covered_message_count: int | None = None,
     error_message: str | None = None,
 ) -> None:
     with _connect() as conn:
@@ -228,6 +254,7 @@ def update_summary(
                 status = ?,
                 summary_text = COALESCE(?, summary_text),
                 estimated_tokens_saved = ?,
+                covered_message_count = COALESCE(?, covered_message_count),
                 error_message = COALESCE(?, error_message),
                 updated_at = ?
             WHERE summary_id = ?
@@ -236,6 +263,7 @@ def update_summary(
                 status,
                 summary_text,
                 estimated_tokens_saved,
+                covered_message_count,
                 error_message,
                 time.time(),
                 summary_id,
