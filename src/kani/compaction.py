@@ -100,6 +100,20 @@ def _compact_messages(
     return compacted
 
 
+# ── Summary token budget ──────────────────────────────────────────────────────
+
+
+def _compute_summary_max_tokens(
+    middle_tokens: int, ratio: float, floor: int, ceiling: int
+) -> int:
+    """Compute a dynamic max_tokens budget for summary generation.
+
+    Result = clamp(middle_tokens * ratio, floor, ceiling).
+    """
+    budget = int(middle_tokens * ratio)
+    return max(floor, min(ceiling, budget))
+
+
 # ── Synchronous (Phase A) compaction ─────────────────────────────────────────
 
 
@@ -135,6 +149,9 @@ async def generate_summary(
     api_key: str,
     protect_first_n: int,
     protect_last_n: int,
+    summary_ratio: float = 0.25,
+    min_summary_tokens: int = 128,
+    max_summary_tokens: int = 1024,
 ) -> str:
     """Call an LLM to generate a handoff summary of the middle message region.
 
@@ -149,8 +166,7 @@ async def generate_summary(
     middle = messages[head_end:tail_start] if tail_start > head_end else messages
 
     conversation_text = "\n".join(
-        f"{m.get('role', 'unknown').upper()}: {m.get('content', '')}"
-        for m in middle
+        f"{m.get('role', 'unknown').upper()}: {m.get('content', '')}" for m in middle
     )
     prompt = (
         "You are a context compaction assistant. Produce a concise factual handoff "
@@ -169,10 +185,14 @@ async def generate_summary(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    middle_tokens = _estimate_tokens(middle)
+    max_tokens = _compute_summary_max_tokens(
+        middle_tokens, summary_ratio, min_summary_tokens, max_summary_tokens
+    )
     payload = {
         "model": summary_model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -209,6 +229,9 @@ class BackgroundCompactionWorker:
         protect_first_n: int,
         protect_last_n: int,
         original_tokens: int,
+        summary_ratio: float = 0.25,
+        min_summary_tokens: int = 128,
+        max_summary_tokens: int = 1024,
     ) -> None:
         """Schedule a background compaction job (non-blocking)."""
         task = asyncio.create_task(
@@ -223,6 +246,9 @@ class BackgroundCompactionWorker:
                 protect_first_n=protect_first_n,
                 protect_last_n=protect_last_n,
                 original_tokens=original_tokens,
+                summary_ratio=summary_ratio,
+                min_summary_tokens=min_summary_tokens,
+                max_summary_tokens=max_summary_tokens,
             )
         )
         self._tasks.add(task)
@@ -241,6 +267,9 @@ class BackgroundCompactionWorker:
         protect_first_n: int,
         protect_last_n: int,
         original_tokens: int,
+        summary_ratio: float = 0.25,
+        min_summary_tokens: int = 128,
+        max_summary_tokens: int = 1024,
     ) -> None:
         from kani.compaction_store import update_summary
 
@@ -254,6 +283,9 @@ class BackgroundCompactionWorker:
                     api_key=api_key,
                     protect_first_n=protect_first_n,
                     protect_last_n=protect_last_n,
+                    summary_ratio=summary_ratio,
+                    min_summary_tokens=min_summary_tokens,
+                    max_summary_tokens=max_summary_tokens,
                 )
                 _, saved = try_sync_compaction(
                     messages,
@@ -275,7 +307,9 @@ class BackgroundCompactionWorker:
                     saved,
                 )
             except Exception as exc:
-                update_summary(summary_id, status="failed", error_message=str(exc)[:512])
+                update_summary(
+                    summary_id, status="failed", error_message=str(exc)[:512]
+                )
                 logger.warning(
                     "COMPACTION_BG_FAILED session=%s snap=%s error=%s",
                     session_id,
