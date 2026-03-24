@@ -503,20 +503,20 @@ async def _resolve_compaction(
     threshold_tokens = int(cc.context_window_tokens * sync_cfg.threshold_percent / 100)
     bg_trigger_tokens = int(cc.context_window_tokens * bg_cfg.trigger_percent / 100)
 
-    # Persist session state
-    try:
-        snap_hash_val = snapshot_hash(messages)
-        upsert_session(
-            session_id,
-            profile=profile,
-            request_id=request_id,
-            snapshot_hash=snap_hash_val,
-            prompt_tokens=prompt_tokens,
-        )
-        mark_stale_summaries(session_id, snap_hash_val)
-    except Exception as exc:
-        logger.warning("COMPACTION session persistence failed: %s", exc)
-        snap_hash_val = snapshot_hash(messages)
+    # Persist session state (skipped when no session ID is available)
+    snap_hash_val = snapshot_hash(messages)
+    if session_id is not None:
+        try:
+            upsert_session(
+                session_id,
+                profile=profile,
+                request_id=request_id,
+                snapshot_hash=snap_hash_val,
+                prompt_tokens=prompt_tokens,
+            )
+            mark_stale_summaries(session_id, snap_hash_val)
+        except Exception as exc:
+            logger.warning("COMPACTION session persistence failed: %s", exc)
 
     # Check for a ready cached summary (Phase B reuse)
     compacted_messages = messages
@@ -524,11 +524,13 @@ async def _resolve_compaction(
     estimated_saved = 0
 
     if sync_cfg.enabled:
-        try:
-            ready = get_ready_summary(session_id, snap_hash_val)
-        except Exception as exc:
-            logger.warning("COMPACTION cache lookup failed: %s", exc)
-            ready = None
+        # Cache lookup is only possible when a session ID is present
+        ready = None
+        if session_id is not None:
+            try:
+                ready = get_ready_summary(session_id, snap_hash_val)
+            except Exception as exc:
+                logger.warning("COMPACTION cache lookup failed: %s", exc)
 
         if ready and ready.get("summary_text"):
             # Reuse cached summary (Phase B hit)
@@ -575,8 +577,12 @@ async def _resolve_compaction(
 
             if summary_model and base_url_for_summary:
                 try:
-                    # Look up prior summary for incremental path
-                    prior_summary_row = get_latest_ready_summary_for_session(session_id)
+                    # Look up prior summary for incremental path (only when session is known)
+                    prior_summary_row = (
+                        get_latest_ready_summary_for_session(session_id)
+                        if session_id is not None
+                        else None
+                    )
                     prior_text: str | None = None
                     prior_covered: int = 0
                     new_covered: int = 0
@@ -686,23 +692,28 @@ async def _resolve_compaction(
                         )
 
                     if compacted is not None:
-                        # Persist the generated summary for future reuse
-                        try:
-                            snap_h = save_snapshot(session_id, messages, prompt_tokens)
-                            from kani.compaction_store import update_summary
+                        # Persist the generated summary for future reuse (only when session is known)
+                        if session_id is not None:
+                            try:
+                                snap_h = save_snapshot(
+                                    session_id, messages, prompt_tokens
+                                )
+                                from kani.compaction_store import update_summary
 
-                            new_id = enqueue_summary(session_id, snap_h, new_covered)
-                            update_summary(
-                                new_id,
-                                status="ready",
-                                summary_text=summary_text,
-                                estimated_tokens_saved=saved,
-                                covered_message_count=new_covered,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "COMPACTION persist inline summary failed: %s", exc
-                            )
+                                new_id = enqueue_summary(
+                                    session_id, snap_h, new_covered
+                                )
+                                update_summary(
+                                    new_id,
+                                    status="ready",
+                                    summary_text=summary_text,
+                                    estimated_tokens_saved=saved,
+                                    covered_message_count=new_covered,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "COMPACTION persist inline summary failed: %s", exc
+                                )
 
                         compacted_messages = compacted
                         mode = "inline"
@@ -736,8 +747,8 @@ async def _resolve_compaction(
             else:
                 mode = "skipped"
 
-    # Phase B: schedule background precompaction if threshold crossed
-    if bg_cfg.enabled and prompt_tokens >= bg_trigger_tokens:
+    # Phase B: schedule background precompaction if threshold crossed (requires session ID)
+    if bg_cfg.enabled and session_id is not None and prompt_tokens >= bg_trigger_tokens:
         try:
             if not get_inflight_summary(session_id, snap_hash_val):
                 snap_h = save_snapshot(session_id, messages, prompt_tokens)
