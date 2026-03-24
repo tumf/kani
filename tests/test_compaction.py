@@ -24,6 +24,100 @@ def compaction_db(tmp_path: Path, monkeypatch):
     store.set_db_path(None)  # reset
 
 
+# ── Router.resolve_model tests ───────────────────────────────────────────────
+
+
+class TestResolveModel:
+    """Unit tests for Router.resolve_model() — no scorer or routing log calls."""
+
+    def _make_router(self):
+        from kani.config import (
+            KaniConfig,
+            ProfileConfig,
+            ProviderConfig,
+            TierModelConfig,
+        )
+        from kani.router import Router
+
+        cfg = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                )
+            },
+            default_provider="openrouter",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(primary="auto-simple"),
+                        "MEDIUM": TierModelConfig(primary="auto-medium"),
+                    }
+                ),
+                "eco": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(primary="eco-simple"),
+                    }
+                ),
+            },
+            default_profile="auto",
+        )
+        return Router(cfg)
+
+    def test_returns_routing_decision_with_correct_model(self):
+        from kani.router import RoutingDecision
+
+        router = self._make_router()
+        decision = router.resolve_model(profile="auto", tier="SIMPLE")
+        assert isinstance(decision, RoutingDecision)
+        assert decision.model == "auto-simple"
+        assert decision.base_url == "https://openrouter.ai/api/v1"
+        assert decision.api_key == "test-key"
+
+    def test_empty_profile_uses_default_profile(self):
+        router = self._make_router()
+        decision = router.resolve_model(profile=None, tier="SIMPLE")
+        assert decision.model == "auto-simple"
+        assert decision.profile == "auto"
+
+    def test_explicit_profile_used(self):
+        router = self._make_router()
+        decision = router.resolve_model(profile="eco", tier="SIMPLE")
+        assert decision.model == "eco-simple"
+        assert decision.profile == "eco"
+
+    def test_does_not_call_classify(self):
+        from unittest.mock import patch
+        from kani.router import Router
+
+        router = self._make_router()
+        with patch.object(Router, "_classify") as mock_classify:
+            router.resolve_model(profile="auto", tier="SIMPLE")
+            mock_classify.assert_not_called()
+
+    def test_does_not_call_routing_logger(self):
+        from unittest.mock import patch
+
+        router = self._make_router()
+        with patch("kani.logger.RoutingLogger.log_decision") as mock_log:
+            router.resolve_model(profile="auto", tier="SIMPLE")
+            mock_log.assert_not_called()
+
+    def test_score_and_confidence_are_zero(self):
+        router = self._make_router()
+        decision = router.resolve_model(profile="auto", tier="SIMPLE")
+        assert decision.score == 0.0
+        assert decision.confidence == 0.0
+        assert decision.signals == []
+
+    def test_falls_back_to_adjacent_tier(self):
+        router = self._make_router()
+        # "eco" only has SIMPLE; requesting COMPLEX should fall back
+        decision = router.resolve_model(profile="eco", tier="COMPLEX")
+        assert decision.model == "eco-simple"
+
+
 # ── compaction_store tests ────────────────────────────────────────────────────
 
 
@@ -451,18 +545,13 @@ profiles:
       MEDIUM: {primary: "auto-medium"}
       COMPLEX: {primary: "auto-complex"}
       REASONING: {primary: "auto-reason"}
-  compress:
-    tiers:
-      SIMPLE: {primary: "compress-model"}
-      MEDIUM: {primary: "compress-model"}
-      COMPLEX: {primary: "compress-model"}
-      REASONING: {primary: "compress-model"}
 smart_proxy:
   context_compaction:
     enabled: true
     sync_compaction:
       enabled: true
       threshold_percent: 1.0
+      summary_profile: ""
     background_precompaction:
       enabled: false
 """

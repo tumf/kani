@@ -186,6 +186,86 @@ class Router:
             fallbacks=fallback_entries,
         )
 
+    def resolve_model(
+        self,
+        *,
+        profile: str | None = None,
+        tier: str = "SIMPLE",
+    ) -> RoutingDecision:
+        """Resolve a model for internal use without running scorer or logging.
+
+        Used by compaction to find the summary model via the Router's
+        profile/tier resolution path, skipping scorer classification and
+        RoutingLogger so internal resolution is not polluted with routing logs.
+
+        Args:
+            profile: Profile name, or None to use default_profile.
+            tier: Tier name (SIMPLE, MEDIUM, COMPLEX, REASONING).
+
+        Returns:
+            A RoutingDecision with resolved model, base_url, api_key, provider,
+            and fallbacks. score/confidence/signals are zero/empty as they are
+            not applicable for internal resolution.
+        """
+        resolved_profile = profile or self.config.default_profile
+
+        profile_cfg = self.config.profiles.get(resolved_profile)
+        if profile_cfg is None:
+            log.warning(
+                "Profile %r not found, falling back to %r",
+                resolved_profile,
+                self.config.default_profile,
+            )
+            resolved_profile = self.config.default_profile
+            profile_cfg = self.config.profiles.get(resolved_profile)
+
+        if profile_cfg is None:
+            raise ValueError(
+                f"No profile configuration found for '{resolved_profile}' "
+                f"and default profile '{self.config.default_profile}' is also missing."
+            )
+
+        tier_cfg = profile_cfg.tiers.get(tier)
+        if tier_cfg is None:
+            tier_cfg = self._fallback_tier(profile_cfg, tier)
+            if tier_cfg is None:
+                raise ValueError(
+                    f"No tier config for '{tier}' in profile '{resolved_profile}'"
+                )
+
+        primary_model, primary_provider = tier_cfg.resolve_primary()
+        provider_name = self._resolve_provider_name(primary_provider, tier_cfg.provider)
+        provider_cfg = self._lookup_provider(provider_name)
+
+        fallback_entries: list[FallbackEntry] = []
+        for fb_model, fb_provider in tier_cfg.resolve_fallbacks():
+            fb_provider_name = self._resolve_provider_name(
+                fb_provider, tier_cfg.provider
+            )
+            fb_provider_cfg = self._lookup_provider(fb_provider_name)
+            fallback_entries.append(
+                FallbackEntry(
+                    model=fb_model,
+                    provider=fb_provider_name,
+                    base_url=fb_provider_cfg.base_url,
+                    api_key=resolve_env(fb_provider_cfg.api_key),
+                )
+            )
+
+        return RoutingDecision(
+            model=primary_model,
+            provider=provider_name,
+            base_url=provider_cfg.base_url,
+            api_key=resolve_env(provider_cfg.api_key),
+            tier=tier,
+            score=0.0,
+            confidence=0.0,
+            signals=[],
+            agentic_score=0.0,
+            profile=resolved_profile,
+            fallbacks=fallback_entries,
+        )
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------

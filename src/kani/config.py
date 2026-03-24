@@ -145,8 +145,8 @@ class SyncCompactionConfig(BaseModel):
     )
     protect_first_n: int = 1  # number of turns to protect at head
     protect_last_n: int = 2  # number of turns to protect at tail
-    summary_model: str = (
-        ""  # model to use for summarisation; empty = use compress profile
+    summary_profile: str = (
+        ""  # routing profile for summary model resolution; empty = use default_profile
     )
     merge_threshold: int = 768  # token threshold for LLM merge vs concatenation
     summary_ratio: float = (
