@@ -568,6 +568,9 @@ async def _resolve_compaction(
                         api_key=api_key_for_summary,
                         protect_first_n=sync_cfg.protect_first_n,
                         protect_last_n=sync_cfg.protect_last_n,
+                        summary_ratio=sync_cfg.summary_ratio,
+                        min_summary_tokens=sync_cfg.min_summary_tokens,
+                        max_summary_tokens=sync_cfg.max_summary_tokens,
                     )
                     compacted, saved = try_sync_compaction(
                         messages,
@@ -655,6 +658,9 @@ async def _resolve_compaction(
                             protect_last_n=sync_cfg.protect_last_n,
                             original_tokens=prompt_tokens,
                             model=model,
+                            summary_ratio=sync_cfg.summary_ratio,
+                            min_summary_tokens=sync_cfg.min_summary_tokens,
+                            max_summary_tokens=sync_cfg.max_summary_tokens,
                         )
                         logger.info(
                             "COMPACTION_BG queued session=%s snap=%s request_id=%s",

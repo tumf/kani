@@ -148,6 +148,11 @@ class SyncCompactionConfig(BaseModel):
     summary_model: str = (
         ""  # model to use for summarisation; empty = use compress profile
     )
+    summary_ratio: float = (
+        0.25  # summary max_tokens = middle_tokens * ratio (before clamping)
+    )
+    min_summary_tokens: int = 128  # floor for dynamic summary max_tokens
+    max_summary_tokens: int = 1024  # ceiling for dynamic summary max_tokens
 
 
 class BackgroundPrecompactionConfig(BaseModel):
