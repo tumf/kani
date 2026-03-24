@@ -167,9 +167,7 @@ def get_snapshot(snap_hash: str) -> dict[str, Any] | None:
 # ── Summary helpers ───────────────────────────────────────────────────────────
 
 
-def get_ready_summary(
-    session_id: str, snap_hash: str
-) -> dict[str, Any] | None:
+def get_ready_summary(session_id: str, snap_hash: str) -> dict[str, Any] | None:
     """Return the most recent ready summary for this session+snapshot, or None."""
     with _connect() as conn:
         row = conn.execute(
@@ -287,8 +285,8 @@ def _message_structure_key(messages: list[dict[str, Any]]) -> str:
         return ""
     parts: list[str] = []
     first = messages[0]
-    parts.append(f"{first.get('role','')[:8]}:{str(first.get('content',''))[:64]}")
+    parts.append(f"{first.get('role', '')[:8]}:{str(first.get('content', ''))[:64]}")
     if len(messages) > 1:
         last = messages[-1]
-        parts.append(f"{last.get('role','')[:8]}:{str(last.get('content',''))[:64]}")
+        parts.append(f"{last.get('role', '')[:8]}:{str(last.get('content', ''))[:64]}")
     return "|".join(parts)

@@ -103,7 +103,9 @@ class TestSummaryLifecycle:
         assert get_inflight_summary("sess1", snap_h) is True
         assert get_ready_summary("sess1", snap_h) is None
 
-        update_summary(sid, status="ready", summary_text="summary here", estimated_tokens_saved=100)
+        update_summary(
+            sid, status="ready", summary_text="summary here", estimated_tokens_saved=100
+        )
 
         assert get_inflight_summary("sess1", snap_h) is False
         ready = get_ready_summary("sess1", snap_h)
@@ -112,7 +114,11 @@ class TestSummaryLifecycle:
         assert ready["estimated_tokens_saved"] == 100
 
     def test_no_duplicate_inflight(self):
-        from kani.compaction_store import enqueue_summary, get_inflight_summary, save_snapshot
+        from kani.compaction_store import (
+            enqueue_summary,
+            get_inflight_summary,
+            save_snapshot,
+        )
 
         msgs = [{"role": "user", "content": "hi"}]
         snap_h = save_snapshot("sess", msgs)
@@ -193,7 +199,9 @@ class TestCompactMessages:
 
         msgs = self._msgs(20)
         original_tokens = _estimate_tokens(msgs)
-        compacted, saved = try_sync_compaction(msgs, "short summary", 1, 2, original_tokens)
+        compacted, saved = try_sync_compaction(
+            msgs, "short summary", 1, 2, original_tokens
+        )
         assert compacted is not None
         assert saved > 0
 
@@ -212,6 +220,68 @@ class TestEstimateTokens:
         long = [{"role": "user", "content": "hi " * 200}]
         assert _estimate_tokens(long) > _estimate_tokens(short)
 
+    def test_english_text_with_known_model(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello, world! This is a test sentence."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        # tiktoken should produce a reasonable token count (not chars/4)
+        assert count > 0
+
+    def test_cjk_text_uses_tiktoken(self):
+        from kani.compaction import _estimate_tokens
+
+        # Japanese text: each character is typically 1-2 tokens with tiktoken
+        # vs. chars/4 which would massively undercount
+        msgs = [
+            {
+                "role": "user",
+                "content": "日本語のテストです。これは文脈の圧縮をテストしています。",
+            }
+        ]
+        count_tiktoken = _estimate_tokens(msgs, model="gpt-4o")
+        # chars/4 fallback estimate
+        total_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+        chars_estimate = total_chars // 4
+        # tiktoken count should be higher than chars/4 for CJK
+        assert count_tiktoken > chars_estimate
+
+    def test_mixed_cjk_english(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello 世界! This is mixed text 日本語."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        assert count > 0
+
+    def test_unknown_model_falls_back_to_cl100k_base(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        # Clear cache to ensure fresh resolution
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "test content"}]
+        # Unknown model should not raise and should return a positive count
+        count = _estimate_tokens(msgs, model="unknown-model-xyz-12345")
+        assert count > 0
+
+    def test_no_model_uses_cl100k_base(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "test content"}]
+        count = _estimate_tokens(msgs, model=None)
+        assert count > 0
+
+    def test_encoder_cached_on_second_call(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "hello"}]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert "gpt-4o" in _encoder_cache
+        # Second call hits cache (enc object is same)
+        enc_first = _encoder_cache["gpt-4o"]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert _encoder_cache["gpt-4o"] is enc_first
+
 
 # ── config model tests ────────────────────────────────────────────────────────
 
@@ -223,12 +293,15 @@ class TestCompactionConfig:
         cfg = KaniConfig()
         assert cfg.smart_proxy.context_compaction.enabled is False
         assert cfg.smart_proxy.context_compaction.sync_compaction.enabled is False
-        assert cfg.smart_proxy.context_compaction.background_precompaction.enabled is False
+        assert (
+            cfg.smart_proxy.context_compaction.background_precompaction.enabled is False
+        )
 
     def test_yaml_round_trip(self):
         from kani.config import load_config
 
         import tempfile, textwrap, os
+
         yaml_text = textwrap.dedent("""\
             default_provider: dummy
             providers:
@@ -354,20 +427,29 @@ profiles:
     )
     monkeypatch.setenv("KANI_DATA_DIR", str(tmp_path / "data"))
     from kani.proxy import app, configure
+
     configure(str(cfg))
     _mock_upstream(monkeypatch)
 
     with TestClient(app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "kani/auto", "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "kani/auto",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
     assert resp.status_code == 200
     # No compaction headers when disabled
-    assert "X-Kani-Compaction" not in resp.headers or resp.headers.get("X-Kani-Compaction") == "off"
+    assert (
+        "X-Kani-Compaction" not in resp.headers
+        or resp.headers.get("X-Kani-Compaction") == "off"
+    )
 
 
-def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, compaction_config):
+def test_compaction_headers_present_when_enabled(
+    tmp_path: Path, monkeypatch, compaction_config
+):
     """Compaction enabled → X-Kani-Compaction header present."""
     from fastapi.testclient import TestClient
     from kani.proxy import app, configure
@@ -376,6 +458,7 @@ def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, co
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
 
     import kani.compaction_store as store
+
     store.set_db_path(tmp_path / "data" / "compaction.db")
     store.init_db()
 
@@ -385,7 +468,10 @@ def test_compaction_headers_present_when_enabled(tmp_path: Path, monkeypatch, co
     with TestClient(app) as client:
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "kani/auto", "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "kani/auto",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
         )
 
     assert resp.status_code == 200
