@@ -60,3 +60,6 @@ kani MUST expose switchable controls and operator-visible telemetry for smart-pr
 **When** kani handles the request
 **Then** kani MUST continue proxying the request without returning a compaction-specific failure to the client
 **And** kani MUST record the failure for operators through logs or metrics
+
+
+#
