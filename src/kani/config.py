@@ -140,10 +140,15 @@ class SyncCompactionConfig(BaseModel):
     """Configuration for synchronous request-time context compaction."""
 
     enabled: bool = False
-    threshold_percent: float = 80.0  # compact when prompt uses ≥ threshold_percent of context
+    threshold_percent: float = (
+        80.0  # compact when prompt uses ≥ threshold_percent of context
+    )
     protect_first_n: int = 1  # number of turns to protect at head
     protect_last_n: int = 2  # number of turns to protect at tail
-    summary_model: str = ""  # model to use for summarisation; empty = use compress profile
+    summary_model: str = (
+        ""  # model to use for summarisation; empty = use compress profile
+    )
+    merge_threshold: int = 768  # token threshold for LLM merge vs concatenation
 
 
 class BackgroundPrecompactionConfig(BaseModel):
@@ -170,7 +175,9 @@ class ContextCompactionConfig(BaseModel):
         default_factory=BackgroundPrecompactionConfig
     )
     session: SessionConfig = Field(default_factory=SessionConfig)
-    context_window_tokens: int = 128000  # assumed context window for threshold calculation
+    context_window_tokens: int = (
+        128000  # assumed context window for threshold calculation
+    )
 
 
 class SmartProxyConfig(BaseModel):
