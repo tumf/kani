@@ -26,8 +26,8 @@ class CompactionResult:
     applied: bool = False
     messages: list[dict[str, Any]] = field(default_factory=list)
     mode: str = "off"  # off | skipped | inline | cached | failed
-    session_id: str = ""
-    session_mode: str = ""  # explicit | derived
+    session_id: str | None = None
+    session_mode: str = ""  # explicit | none
     estimated_tokens_saved: int = 0
     original_tokens: int = 0
     error: str = ""

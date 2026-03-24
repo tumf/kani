@@ -291,30 +291,13 @@ def resolve_session_id(
     *,
     explicit_header: str | None = None,
     model: str = "",
-) -> tuple[str, str]:
+) -> tuple[str | None, str]:
     """Resolve the session ID and return (session_id, resolution_mode).
 
-    Priority:
-    1. explicit header value
-    2. deterministic fallback hash from model + message structure
+    Returns (session_id, "explicit") when the client provides an explicit header,
+    or (None, "none") when no header is present.  Derived session resolution has
+    been removed to avoid false-positive collisions.
     """
     if explicit_header and explicit_header.strip():
         return explicit_header.strip(), "explicit"
-
-    # Derived: hash from model family + first/last user message content (structure only)
-    structure_key = model + "||" + _message_structure_key(messages)
-    derived = hashlib.sha256(structure_key.encode()).hexdigest()[:24]
-    return derived, "derived"
-
-
-def _message_structure_key(messages: list[dict[str, Any]]) -> str:
-    """A lightweight structural fingerprint — first and last messages only."""
-    if not messages:
-        return ""
-    parts: list[str] = []
-    first = messages[0]
-    parts.append(f"{first.get('role', '')[:8]}:{str(first.get('content', ''))[:64]}")
-    if len(messages) > 1:
-        last = messages[-1]
-        parts.append(f"{last.get('role', '')[:8]}:{str(last.get('content', ''))[:64]}")
-    return "|".join(parts)
+    return None, "none"

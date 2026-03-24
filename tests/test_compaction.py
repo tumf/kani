@@ -130,28 +130,21 @@ class TestSessionResolution:
         assert sid == "my-session-123"
         assert mode == "explicit"
 
-    def test_derived_fallback(self):
+    def test_no_header_returns_none(self):
         from kani.compaction_store import resolve_session_id
 
         msgs = [{"role": "user", "content": "hello"}]
         sid, mode = resolve_session_id(msgs, model="gpt-4o")
-        assert mode == "derived"
-        assert len(sid) == 24
+        assert sid is None
+        assert mode == "none"
 
-    def test_derived_is_deterministic(self):
-        from kani.compaction_store import resolve_session_id
-
-        msgs = [{"role": "user", "content": "hello"}]
-        sid1, _ = resolve_session_id(msgs, model="gpt-4o")
-        sid2, _ = resolve_session_id(msgs, model="gpt-4o")
-        assert sid1 == sid2
-
-    def test_empty_header_falls_back_to_derived(self):
+    def test_empty_header_returns_none(self):
         from kani.compaction_store import resolve_session_id
 
         msgs = [{"role": "user", "content": "hi"}]
         sid, mode = resolve_session_id(msgs, explicit_header="   ")
-        assert mode == "derived"
+        assert sid is None
+        assert mode == "none"
 
 
 class TestSnapshotPersistence:
@@ -1314,34 +1307,230 @@ class TestCompactMessagesEdgeCases:
         assert any("SUMMARY" in m.get("content", "") for m in result)
 
 
-# ── _message_structure_key tests ──────────────────────────────────────────────
+# ── no_session inline path tests ──────────────────────────────────────────────
 
 
-class TestMessageStructureKey:
-    """Tests for _message_structure_key used in session derivation."""
+class TestCompactionHeadersNoSession:
+    """_compaction_headers omits X-Kani-Compaction-Session when session_id is None."""
 
-    def test_empty_messages(self):
-        from kani.compaction_store import _message_structure_key
+    def test_no_session_omits_session_header(self):
+        from kani.compaction import CompactionResult
+        from kani.proxy import _compaction_headers
 
-        assert _message_structure_key([]) == ""
+        result = CompactionResult(mode="inline", session_id=None, session_mode="none")
+        hdrs = _compaction_headers(result)
+        assert "X-Kani-Compaction" in hdrs
+        assert "X-Kani-Compaction-Session" not in hdrs
 
-    def test_single_message(self):
-        from kani.compaction_store import _message_structure_key
+    def test_explicit_session_includes_session_header(self):
+        from kani.compaction import CompactionResult
+        from kani.proxy import _compaction_headers
 
-        msgs = [{"role": "user", "content": "hello"}]
-        key = _message_structure_key(msgs)
-        assert "user" in key
-        assert "hello" in key
+        result = CompactionResult(
+            mode="inline", session_id="my-sess", session_mode="explicit"
+        )
+        hdrs = _compaction_headers(result)
+        assert hdrs.get("X-Kani-Compaction-Session") == "explicit"
 
-    def test_two_messages_includes_both(self):
-        from kani.compaction_store import _message_structure_key
 
-        msgs = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "world"},
+class TestNoSessionInlinePath:
+    """When no session header is sent, inline compaction fires but no DB state is written."""
+
+    def _make_long_messages(self) -> list[dict[str, Any]]:
+        """Build a message list large enough to exceed a low token threshold."""
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u0 " + "x" * 200},
+            {"role": "assistant", "content": "a0 " + "x" * 200},
+            {"role": "user", "content": "u1 " + "x" * 200},
+            {"role": "assistant", "content": "a1 " + "x" * 200},
+            {"role": "user", "content": "u2 " + "x" * 200},
         ]
-        key = _message_structure_key(msgs)
-        assert "user" in key
-        assert "assistan" in key  # truncated to 8 chars
-        assert "hello" in key
-        assert "world" in key
+
+    def test_no_session_inline_mode_fires(self):
+        """_resolve_compaction returns mode='inline' and session_id=None with no session header."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import kani.proxy as proxy_mod
+        from kani.config import (
+            BackgroundPrecompactionConfig,
+            ContextCompactionConfig,
+            KaniConfig,
+            ProfileConfig,
+            ProviderConfig,
+            SessionConfig,
+            SmartProxyConfig,
+            SyncCompactionConfig,
+            TierModelConfig,
+        )
+        from kani.router import RoutingDecision
+
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                )
+            },
+            default_provider="dummy",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={"SIMPLE": TierModelConfig(primary="auto-simple")}
+                )
+            },
+            default_profile="auto",
+            smart_proxy=SmartProxyConfig(
+                context_compaction=ContextCompactionConfig(
+                    enabled=True,
+                    context_window_tokens=10,  # tiny window → threshold = 0.1 tokens
+                    sync_compaction=SyncCompactionConfig(
+                        enabled=True,
+                        threshold_percent=1.0,
+                        summary_profile="auto",
+                    ),
+                    background_precompaction=BackgroundPrecompactionConfig(
+                        enabled=False,
+                    ),
+                    session=SessionConfig(header_name="X-Kani-Session-Id"),
+                )
+            ),
+        )
+
+        mock_request = MagicMock()
+        mock_request.headers.get.return_value = None  # no session header
+
+        mock_decision = RoutingDecision(
+            model="auto-simple",
+            provider="dummy",
+            base_url="http://localhost:9999",
+            api_key="fake",
+            profile="auto",
+            tier="SIMPLE",
+            score=0.0,
+            confidence=1.0,
+        )
+
+        original_config = proxy_mod._config
+        original_router = proxy_mod._router
+        try:
+            proxy_mod._config = cfg
+            proxy_mod._router = MagicMock()
+            proxy_mod._router.resolve_model.return_value = mock_decision
+
+            async def run():
+                with patch(
+                    "kani.proxy.generate_summary",
+                    AsyncMock(return_value="INLINE SUMMARY"),
+                ):
+                    return await proxy_mod._resolve_compaction(
+                        self._make_long_messages(),
+                        mock_request,
+                        profile="auto",
+                        request_id="req-no-sess",
+                        model="auto-simple",
+                    )
+
+            result = asyncio.run(run())
+        finally:
+            proxy_mod._config = original_config
+            proxy_mod._router = original_router
+
+        assert result.mode == "inline"
+        assert result.session_id is None
+        assert result.session_mode == "none"
+
+    def test_no_session_no_db_state(self):
+        """When session_id is None, no session row is created in the DB."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import kani.compaction_store as store
+        import kani.proxy as proxy_mod
+        from kani.config import (
+            BackgroundPrecompactionConfig,
+            ContextCompactionConfig,
+            KaniConfig,
+            ProfileConfig,
+            ProviderConfig,
+            SessionConfig,
+            SmartProxyConfig,
+            SyncCompactionConfig,
+            TierModelConfig,
+        )
+        from kani.router import RoutingDecision
+
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                )
+            },
+            default_provider="dummy",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={"SIMPLE": TierModelConfig(primary="auto-simple")}
+                )
+            },
+            default_profile="auto",
+            smart_proxy=SmartProxyConfig(
+                context_compaction=ContextCompactionConfig(
+                    enabled=True,
+                    context_window_tokens=10,
+                    sync_compaction=SyncCompactionConfig(
+                        enabled=True,
+                        threshold_percent=1.0,
+                        summary_profile="auto",
+                    ),
+                    background_precompaction=BackgroundPrecompactionConfig(
+                        enabled=False,
+                    ),
+                    session=SessionConfig(header_name="X-Kani-Session-Id"),
+                )
+            ),
+        )
+
+        mock_request = MagicMock()
+        mock_request.headers.get.return_value = None
+
+        mock_decision = RoutingDecision(
+            model="auto-simple",
+            provider="dummy",
+            base_url="http://localhost:9999",
+            api_key="fake",
+            profile="auto",
+            tier="SIMPLE",
+            score=0.0,
+            confidence=1.0,
+        )
+
+        original_config = proxy_mod._config
+        original_router = proxy_mod._router
+        try:
+            proxy_mod._config = cfg
+            proxy_mod._router = MagicMock()
+            proxy_mod._router.resolve_model.return_value = mock_decision
+
+            async def run():
+                with patch(
+                    "kani.proxy.generate_summary",
+                    AsyncMock(return_value="INLINE SUMMARY"),
+                ):
+                    return await proxy_mod._resolve_compaction(
+                        self._make_long_messages(),
+                        mock_request,
+                        profile="auto",
+                        request_id="req-no-sess-2",
+                        model="auto-simple",
+                    )
+
+            asyncio.run(run())
+        finally:
+            proxy_mod._config = original_config
+            proxy_mod._router = original_router
+
+        # No session should be stored in DB
+        assert store.get_session("any-session") is None
