@@ -762,9 +762,7 @@ class TestHierarchicalMergeSummaries:
         prior = "Prior summary text"
         delta = "Delta summary text"
         # merge_threshold very high → concatenation path
-        result = asyncio.get_event_loop().run_until_complete(
-            _merge_summaries(prior, delta, merge_threshold=99999)
-        )
+        result = asyncio.run(_merge_summaries(prior, delta, merge_threshold=99999))
         assert "Prior summary text" in result
         assert "Delta summary text" in result
         assert "[Continued]" in result
@@ -790,7 +788,7 @@ class TestHierarchicalMergeSummaries:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _merge_summaries(
                     prior,
                     delta,
@@ -818,7 +816,7 @@ class TestHierarchicalMergeSummaries:
             MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClient.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 _merge_summaries(
                     prior,
                     delta,
@@ -934,3 +932,416 @@ class TestHierarchicalSnapshotMismatchFallback:
         assert latest is not None
         assert latest["summary_text"] == "second summary"
         assert latest["covered_message_count"] == 3
+
+
+# ── Session upsert/get tests ─────────────────────────────────────────────────
+
+
+class TestSessionUpsert:
+    """Tests for upsert_session and get_session."""
+
+    def test_upsert_and_get(self):
+        from kani.compaction_store import get_session, upsert_session
+
+        upsert_session(
+            "sess-upsert",
+            profile="auto",
+            request_id="req-1",
+            snapshot_hash="abc123",
+            prompt_tokens=100,
+            total_tokens=200,
+        )
+        sess = get_session("sess-upsert")
+        assert sess is not None
+        assert sess["session_id"] == "sess-upsert"
+        assert sess["profile"] == "auto"
+        assert sess["latest_prompt_tokens"] == 100
+
+    def test_upsert_updates_existing(self):
+        from kani.compaction_store import get_session, upsert_session
+
+        upsert_session("sess-up2", profile="auto", prompt_tokens=50)
+        upsert_session("sess-up2", profile="eco", prompt_tokens=150)
+        sess = get_session("sess-up2")
+        assert sess is not None
+        assert sess["profile"] == "eco"
+        assert sess["latest_prompt_tokens"] == 150
+
+    def test_get_missing_session_returns_none(self):
+        from kani.compaction_store import get_session
+
+        assert get_session("nonexistent-session") is None
+
+
+# ── Worker singleton tests ────────────────────────────────────────────────────
+
+
+class TestWorkerSingleton:
+    """Tests for get_worker/set_worker module-level singleton."""
+
+    def test_default_worker_is_none(self):
+        from kani.compaction import get_worker, set_worker
+
+        set_worker(None)
+        assert get_worker() is None
+
+    def test_set_and_get_worker(self):
+        from kani.compaction import (
+            BackgroundCompactionWorker,
+            get_worker,
+            set_worker,
+        )
+
+        w = BackgroundCompactionWorker(max_concurrency=1)
+        set_worker(w)
+        assert get_worker() is w
+        set_worker(None)  # cleanup
+
+
+# ── generate_summary error cases ──────────────────────────────────────────────
+
+
+class TestGenerateSummaryErrors:
+    """Tests for generate_summary error paths."""
+
+    def test_empty_choices_raises(self):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kani.compaction import generate_summary
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status = MagicMock()
+                mock_resp.json.return_value = {"choices": []}
+                mock_client.post = AsyncMock(return_value=mock_resp)
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+                return await generate_summary(
+                    [{"role": "user", "content": "hello"}],
+                    summary_model="test",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                    protect_first_n=0,
+                    protect_last_n=0,
+                )
+
+        with pytest.raises(ValueError, match="No choices"):
+            asyncio.run(run())
+
+    def test_network_error_propagates(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from kani.compaction import generate_summary
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(
+                    side_effect=ConnectionError("connection refused")
+                )
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+                return await generate_summary(
+                    [{"role": "user", "content": "hello"}],
+                    summary_model="test",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                    protect_first_n=0,
+                    protect_last_n=0,
+                )
+
+        with pytest.raises(ConnectionError):
+            asyncio.run(run())
+
+    def test_url_construction_appends_v1(self):
+        """generate_summary correctly builds URL with /v1/chat/completions."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kani.compaction import generate_summary
+
+        captured_url = {}
+
+        async def fake_post(url, *, json, headers):
+            captured_url["url"] = url
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"choices": [{"message": {"content": "summary"}}]}
+            return resp
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = fake_post
+                return await generate_summary(
+                    [{"role": "user", "content": "test"}],
+                    summary_model="model",
+                    base_url="http://example.com/api",
+                    api_key="key",
+                    protect_first_n=0,
+                    protect_last_n=0,
+                )
+
+        asyncio.run(run())
+        assert captured_url["url"] == "http://example.com/api/v1/chat/completions"
+
+    def test_url_with_existing_v1_not_duplicated(self):
+        """When base_url already ends with /v1, it is not duplicated."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kani.compaction import generate_summary
+
+        captured_url = {}
+
+        async def fake_post(url, *, json, headers):
+            captured_url["url"] = url
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"choices": [{"message": {"content": "summary"}}]}
+            return resp
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = fake_post
+                return await generate_summary(
+                    [{"role": "user", "content": "test"}],
+                    summary_model="model",
+                    base_url="http://example.com/v1",
+                    api_key="key",
+                    protect_first_n=0,
+                    protect_last_n=0,
+                )
+
+        asyncio.run(run())
+        assert captured_url["url"] == "http://example.com/v1/chat/completions"
+
+
+# ── BackgroundCompactionWorker tests ──────────────────────────────────────────
+
+
+class TestBackgroundCompactionWorker:
+    """Tests for BackgroundCompactionWorker schedule/run/shutdown."""
+
+    def test_worker_shutdown_no_tasks(self):
+        """Shutdown with no scheduled tasks completes without error."""
+        import asyncio
+
+        from kani.compaction import BackgroundCompactionWorker
+
+        worker = BackgroundCompactionWorker(max_concurrency=2)
+        asyncio.run(worker.shutdown())
+        assert len(worker._tasks) == 0
+
+    def test_worker_schedule_and_run(self):
+        """Worker schedules a job, generates summary, and updates store to ready."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kani.compaction import BackgroundCompactionWorker
+        from kani.compaction_store import (
+            enqueue_summary,
+            get_ready_summary,
+            save_snapshot,
+        )
+
+        msgs = _make_msgs(10)
+        snap_h = save_snapshot("sess-worker", msgs, prompt_tokens=100)
+        sid = enqueue_summary("sess-worker", snap_h)
+
+        mock_response = {"choices": [{"message": {"content": "bg summary"}}]}
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status = MagicMock()
+                mock_resp.json.return_value = mock_response
+                mock_client.post = AsyncMock(return_value=mock_resp)
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                worker = BackgroundCompactionWorker(max_concurrency=1)
+                worker.schedule(
+                    summary_id=sid,
+                    session_id="sess-worker",
+                    snap_hash=snap_h,
+                    messages=msgs,
+                    summary_model="test-model",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                    protect_first_n=1,
+                    protect_last_n=2,
+                    original_tokens=200,
+                )
+                # Wait for the task to complete
+                await asyncio.sleep(0.5)
+                await worker.shutdown()
+
+        asyncio.run(run())
+
+        ready = get_ready_summary("sess-worker", snap_h)
+        assert ready is not None
+        assert ready["summary_text"] == "bg summary"
+        assert ready["status"] == "ready"
+
+    def test_worker_handles_failure_gracefully(self):
+        """Worker marks summary as failed when generate_summary raises."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+
+        from kani.compaction import BackgroundCompactionWorker
+        from kani.compaction_store import enqueue_summary, save_snapshot
+
+        msgs = _make_msgs(10)
+        snap_h = save_snapshot("sess-fail", msgs)
+        sid = enqueue_summary("sess-fail", snap_h)
+
+        async def run():
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=Exception("LLM unavailable"))
+                MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                worker = BackgroundCompactionWorker(max_concurrency=1)
+                worker.schedule(
+                    summary_id=sid,
+                    session_id="sess-fail",
+                    snap_hash=snap_h,
+                    messages=msgs,
+                    summary_model="test-model",
+                    base_url="http://localhost:9999",
+                    api_key="fake",
+                    protect_first_n=1,
+                    protect_last_n=2,
+                    original_tokens=200,
+                )
+                await asyncio.sleep(0.5)
+                await worker.shutdown()
+
+        asyncio.run(run())
+
+        # Summary should be marked as failed
+        import sqlite3
+        from kani.compaction_store import _db_path
+
+        conn = sqlite3.connect(str(_db_path()))
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM compaction_summaries WHERE summary_id = ?", (sid,)
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert dict(row)["status"] == "failed"
+        assert "LLM unavailable" in dict(row)["error_message"]
+
+
+# ── Edge case tests ───────────────────────────────────────────────────────────
+
+
+class TestCompactMessagesEdgeCases:
+    """Edge case tests for _compact_messages."""
+
+    def test_empty_message_list(self):
+        from kani.compaction import _compact_messages
+
+        result = _compact_messages([], "summary", 1, 1)
+        assert result is None
+
+    def test_single_message(self):
+        from kani.compaction import _compact_messages
+
+        msgs = [{"role": "user", "content": "hi"}]
+        result = _compact_messages(msgs, "summary", 1, 1)
+        assert result is None
+
+    def test_tail_role_duplication_returns_none(self):
+        """When tail has consecutive same-role messages, compaction is rejected."""
+        from kani.compaction import _compact_messages
+
+        # Build messages where the tail (last 2) has consecutive user roles
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+            {"role": "user", "content": "u4"},  # consecutive user in tail
+        ]
+        result = _compact_messages(msgs, "summary", 1, 2)
+        assert result is None
+
+    def test_messages_with_empty_content(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [
+            {"role": "user", "content": ""},
+            {"role": "assistant"},  # no content key at all
+            {"role": "user", "content": "hello"},
+        ]
+        # Should not crash — returns a positive count for the non-empty message
+        count = _estimate_tokens(msgs)
+        assert count >= 1
+
+    def test_compact_with_no_system_message(self):
+        """Compaction works correctly when first message is not system."""
+        from kani.compaction import _compact_messages
+
+        msgs = [
+            {"role": "user", "content": "u0"},
+            {"role": "assistant", "content": "a0"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+        result = _compact_messages(msgs, "SUMMARY", 1, 1)
+        assert result is not None
+        # Head: msgs[0], Summary message, Tail: msgs[-1]
+        assert result[0] == msgs[0]
+        assert result[-1] == msgs[-1]
+        assert any("SUMMARY" in m.get("content", "") for m in result)
+
+
+# ── _message_structure_key tests ──────────────────────────────────────────────
+
+
+class TestMessageStructureKey:
+    """Tests for _message_structure_key used in session derivation."""
+
+    def test_empty_messages(self):
+        from kani.compaction_store import _message_structure_key
+
+        assert _message_structure_key([]) == ""
+
+    def test_single_message(self):
+        from kani.compaction_store import _message_structure_key
+
+        msgs = [{"role": "user", "content": "hello"}]
+        key = _message_structure_key(msgs)
+        assert "user" in key
+        assert "hello" in key
+
+    def test_two_messages_includes_both(self):
+        from kani.compaction_store import _message_structure_key
+
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        key = _message_structure_key(msgs)
+        assert "user" in key
+        assert "assistan" in key  # truncated to 8 chars
+        assert "hello" in key
+        assert "world" in key
