@@ -289,3 +289,251 @@ def test_dashboard_stats_endpoint_accepts_repeated_profile_query_params(
     assert payload["selected_profiles"] == ["auto", "eco"]
     assert payload["total_requests"] == 2
     assert payload["windows"]["24h"]["prompt_tokens"] == 300
+
+
+def test_log_execution_event_includes_compaction_fields(configured_dashboard, tmp_path):
+    """log_execution_event writes compaction fields to JSONL and DB."""
+    import json as _json
+
+    dashboard.log_execution_event(
+        request_id="req-cmp",
+        tier="SIMPLE",
+        score=0.2,
+        confidence=0.9,
+        agentic_score=0.1,
+        model="m1",
+        provider="p1",
+        profile="auto",
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        elapsed_ms=150.0,
+        compaction_mode="inline",
+        compaction_tokens_saved=50,
+        compaction_original_tokens=150,
+        compaction_session_id="sess-abc",
+    )
+
+    # Find the written JSONL file and verify compaction fields
+    from kani.dirs import log_dir
+
+    jsonl_files = list(log_dir().glob("execution-*.jsonl"))
+    assert jsonl_files, "No execution JSONL written"
+    records = []
+    for f in jsonl_files:
+        for line in f.read_text().splitlines():
+            if line.strip():
+                records.append(_json.loads(line))
+    assert records, "No records in JSONL"
+    rec = records[-1]
+    assert rec["compaction_mode"] == "inline"
+    assert rec["compaction_tokens_saved"] == 50
+    assert rec["compaction_original_tokens"] == 150
+    assert rec["compaction_session_id"] == "sess-abc"
+
+
+def test_ingest_execution_logs_maps_compaction_fields(configured_dashboard, tmp_path):
+    """ingest_execution_logs maps compaction JSONL fields into DB columns."""
+    import json as _json
+
+    from kani.dirs import log_dir
+
+    log_dir().mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    record = {
+        "timestamp": now.isoformat(),
+        "request_id": "req-ingest",
+        "tier": "SIMPLE",
+        "score": 0.2,
+        "confidence": 0.9,
+        "agentic_score": 0.1,
+        "model": "m1",
+        "provider": "p1",
+        "profile": "auto",
+        "prompt_tokens": 200,
+        "completion_tokens": 40,
+        "total_tokens": 240,
+        "elapsed_ms": 100.0,
+        "compaction_mode": "cached",
+        "compaction_tokens_saved": 80,
+        "compaction_original_tokens": 200,
+        "compaction_session_id": "sess-xyz",
+    }
+    day_str = now.strftime("%Y-%m-%d")
+    log_file = log_dir() / f"execution-{day_str}.jsonl"
+    log_file.write_text(_json.dumps(record) + "\n")
+
+    count = dashboard.ingest_execution_logs(days=1)
+    assert count >= 1
+
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT compaction_mode, compaction_tokens_saved, compaction_original_tokens, compaction_session_id FROM execution_logs WHERE request_id = 'req-ingest'"
+        ).fetchone()
+    assert row is not None
+    assert row["compaction_mode"] == "cached"
+    assert row["compaction_tokens_saved"] == 80
+    assert row["compaction_original_tokens"] == 200
+    assert row["compaction_session_id"] == "sess-xyz"
+
+
+def test_window_summary_includes_compaction_aggregates(configured_dashboard):
+    """_window_summary returns compaction_requests and compaction_tokens_saved."""
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp": (now - timedelta(minutes=10)).isoformat(),
+            "request_id": "r1",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "elapsed_ms": 100.0,
+            "compaction_mode": "inline",
+            "compaction_tokens_saved": 60,
+            "compaction_original_tokens": 160,
+            "compaction_session_id": "s1",
+        },
+        {
+            "timestamp": (now - timedelta(minutes=9)).isoformat(),
+            "request_id": "r2",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 200,
+            "completion_tokens": 40,
+            "total_tokens": 240,
+            "elapsed_ms": 150.0,
+            "compaction_mode": "skipped",
+            "compaction_tokens_saved": 0,
+            "compaction_original_tokens": 200,
+            "compaction_session_id": "s2",
+        },
+    ]
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in rows:
+            dashboard._insert_execution_record(conn, row)
+        conn.commit()
+
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        summary = dashboard._window_summary(conn, 24)
+
+    assert summary["compaction_requests"] == 1
+    assert summary["compaction_tokens_saved"] == 60
+
+
+def test_daily_trends_includes_compaction_columns(configured_dashboard):
+    """_daily_trends returns compaction_requests and compaction_tokens_saved per day."""
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp": (now - timedelta(hours=1)).isoformat(),
+            "request_id": "r3",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 300,
+            "completion_tokens": 60,
+            "total_tokens": 360,
+            "elapsed_ms": 200.0,
+            "compaction_mode": "cached",
+            "compaction_tokens_saved": 100,
+            "compaction_original_tokens": 300,
+            "compaction_session_id": "s3",
+        },
+    ]
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in rows:
+            dashboard._insert_execution_record(conn, row)
+        conn.commit()
+
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        trends = dashboard._daily_trends(conn, days=2)
+
+    today = now.date().isoformat()
+    today_row = next((t for t in trends if t["day"] == today), None)
+    assert today_row is not None
+    assert today_row["compaction_requests"] >= 1
+    assert today_row["compaction_tokens_saved"] >= 100
+
+
+def test_render_window_cards_shows_compaction_metrics():
+    """_render_window_cards includes Compacted reqs and Saved tokens rows."""
+    windows = {
+        "24h": {
+            "routing_requests": 10,
+            "execution_requests": 10,
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200,
+            "avg_elapsed_ms": 150.0,
+            "usage_coverage": 1.0,
+            "compaction_requests": 5,
+            "compaction_tokens_saved": 300,
+        },
+        "7d": {
+            "routing_requests": 50,
+            "execution_requests": 50,
+            "prompt_tokens": 5000,
+            "completion_tokens": 1000,
+            "total_tokens": 6000,
+            "avg_elapsed_ms": 160.0,
+            "usage_coverage": 1.0,
+            "compaction_requests": 20,
+            "compaction_tokens_saved": 1200,
+        },
+        "30d": {
+            "routing_requests": 200,
+            "execution_requests": 200,
+            "prompt_tokens": 20000,
+            "completion_tokens": 4000,
+            "total_tokens": 24000,
+            "avg_elapsed_ms": 155.0,
+            "usage_coverage": 1.0,
+            "compaction_requests": 80,
+            "compaction_tokens_saved": 5000,
+        },
+    }
+    html = dashboard._render_window_cards(windows)
+    assert "Compacted reqs" in html
+    assert "Saved tokens" in html
+    assert "5" in html  # compaction_requests for 24h
+
+
+def test_render_daily_table_shows_compaction_columns():
+    """_render_daily_table includes Compacted and Saved tokens columns."""
+    rows = [
+        {
+            "day": "2026-03-24",
+            "requests": 10,
+            "execution_requests": 10,
+            "prompt_tokens": 1000,
+            "completion_tokens": 200,
+            "total_tokens": 1200,
+            "compaction_requests": 4,
+            "compaction_tokens_saved": 250,
+        }
+    ]
+    html = dashboard._render_daily_table(rows)
+    assert "Compacted" in html
+    assert "Saved tokens" in html
+    assert "250" in html

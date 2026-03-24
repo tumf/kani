@@ -29,6 +29,7 @@ class CompactionResult:
     session_id: str = ""
     session_mode: str = ""  # explicit | derived
     estimated_tokens_saved: int = 0
+    original_tokens: int = 0
     error: str = ""
 
 
