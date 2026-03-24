@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import tiktoken
+
 logger = logging.getLogger("kani.compaction")
 
 
@@ -32,13 +34,47 @@ class CompactionResult:
 
 # ── Token estimation ──────────────────────────────────────────────────────────
 
-_CHARS_PER_TOKEN = 4  # conservative estimate when no exact count is available
+_CHARS_PER_TOKEN = 4  # fallback when tiktoken is unavailable
+
+# Module-level cache: model name (or "") → tiktoken Encoding | None
+_encoder_cache: dict[str, tiktoken.Encoding | None] = {}
 
 
-def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
-    """Rough token estimate for a message list (chars / 4)."""
-    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-    return max(1, total_chars // _CHARS_PER_TOKEN)
+def _get_encoder(model: str | None) -> tiktoken.Encoding | None:
+    """Return a cached tiktoken Encoding for model, falling back to cl100k_base."""
+    key = model or ""
+    if key in _encoder_cache:
+        return _encoder_cache[key]
+    try:
+        enc: tiktoken.Encoding | None = (
+            tiktoken.encoding_for_model(model)
+            if model
+            else tiktoken.get_encoding("cl100k_base")
+        )
+    except KeyError:
+        # Unknown model name — fall back to cl100k_base
+        try:
+            enc = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            enc = None
+    except Exception:
+        enc = None
+    _encoder_cache[key] = enc
+    return enc
+
+
+def _estimate_tokens(messages: list[dict[str, Any]], model: str | None = None) -> int:
+    """Estimate token count for a message list using tiktoken when available.
+
+    Falls back to chars/4 if tiktoken cannot resolve an encoding.
+    """
+    enc = _get_encoder(model)
+    if enc is not None:
+        total = sum(len(enc.encode(str(m.get("content", "")))) for m in messages)
+    else:
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        total = total_chars // _CHARS_PER_TOKEN
+    return max(1, total)
 
 
 # ── Message compaction algorithm ──────────────────────────────────────────────
@@ -202,6 +238,20 @@ async def _merge_summaries(
     return f"{prior}\n\n---\n\n[Continued]\n{new_delta}"
 
 
+# ── Summary token budget ──────────────────────────────────────────────────────
+
+
+def _compute_summary_max_tokens(
+    middle_tokens: int, ratio: float, floor: int, ceiling: int
+) -> int:
+    """Compute a dynamic max_tokens budget for summary generation.
+
+    Result = clamp(middle_tokens * ratio, floor, ceiling).
+    """
+    budget = int(middle_tokens * ratio)
+    return max(floor, min(ceiling, budget))
+
+
 # ── Synchronous (Phase A) compaction ─────────────────────────────────────────
 
 
@@ -211,6 +261,7 @@ def try_sync_compaction(
     protect_first_n: int,
     protect_last_n: int,
     original_tokens: int,
+    model: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, int]:
     """Attempt synchronous compaction.
 
@@ -221,7 +272,7 @@ def try_sync_compaction(
     )
     if compacted is None:
         return None, 0
-    new_tokens = _estimate_tokens(compacted)
+    new_tokens = _estimate_tokens(compacted, model)
     saved = max(0, original_tokens - new_tokens)
     return compacted, saved
 
@@ -237,6 +288,9 @@ async def generate_summary(
     api_key: str,
     protect_first_n: int,
     protect_last_n: int,
+    summary_ratio: float = 0.25,
+    min_summary_tokens: int = 128,
+    max_summary_tokens: int = 1024,
 ) -> str:
     """Call an LLM to generate a handoff summary of the middle message region.
 
@@ -270,10 +324,14 @@ async def generate_summary(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    middle_tokens = _estimate_tokens(middle)
+    max_tokens = _compute_summary_max_tokens(
+        middle_tokens, summary_ratio, min_summary_tokens, max_summary_tokens
+    )
     payload = {
         "model": summary_model,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
     }
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -313,6 +371,10 @@ class BackgroundCompactionWorker:
         merge_threshold: int = 768,
         prior_summary: str | None = None,
         prior_covered_count: int = 0,
+        model: str | None = None,
+        summary_ratio: float = 0.25,
+        min_summary_tokens: int = 128,
+        max_summary_tokens: int = 1024,
     ) -> None:
         """Schedule a background compaction job (non-blocking)."""
         task = asyncio.create_task(
@@ -330,6 +392,10 @@ class BackgroundCompactionWorker:
                 merge_threshold=merge_threshold,
                 prior_summary=prior_summary,
                 prior_covered_count=prior_covered_count,
+                model=model,
+                summary_ratio=summary_ratio,
+                min_summary_tokens=min_summary_tokens,
+                max_summary_tokens=max_summary_tokens,
             )
         )
         self._tasks.add(task)
@@ -351,6 +417,10 @@ class BackgroundCompactionWorker:
         merge_threshold: int = 768,
         prior_summary: str | None = None,
         prior_covered_count: int = 0,
+        model: str | None = None,
+        summary_ratio: float = 0.25,
+        min_summary_tokens: int = 128,
+        max_summary_tokens: int = 1024,
     ) -> None:
         from kani.compaction_store import update_summary
 
@@ -379,6 +449,9 @@ class BackgroundCompactionWorker:
                             api_key=api_key,
                             protect_first_n=0,
                             protect_last_n=protect_last_n,
+                            summary_ratio=summary_ratio,
+                            min_summary_tokens=min_summary_tokens,
+                            max_summary_tokens=max_summary_tokens,
                         )
                         summary_text = await _merge_summaries(
                             prior_summary,
@@ -398,6 +471,9 @@ class BackgroundCompactionWorker:
                         api_key=api_key,
                         protect_first_n=protect_first_n,
                         protect_last_n=protect_last_n,
+                        summary_ratio=summary_ratio,
+                        min_summary_tokens=min_summary_tokens,
+                        max_summary_tokens=max_summary_tokens,
                     )
                     new_covered = max(0, tail_start - head_end)
 
@@ -407,6 +483,7 @@ class BackgroundCompactionWorker:
                     protect_first_n,
                     protect_last_n,
                     original_tokens,
+                    model,
                 )
                 update_summary(
                     summary_id,

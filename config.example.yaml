@@ -41,6 +41,9 @@ default_profile: auto
 #       protect_first_n: 1
 #       protect_last_n: 2
 #       summary_model: ""          # empty = use 'compress' profile primary model
+#       summary_ratio: 0.25        # summary max_tokens = middle_tokens * ratio
+#       min_summary_tokens: 128    # floor for dynamic summary token budget
+#       max_summary_tokens: 1024   # ceiling for dynamic summary token budget
 #     background_precompaction:
 #       enabled: true
 #       trigger_percent: 70.0

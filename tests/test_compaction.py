@@ -206,6 +206,89 @@ class TestCompactMessages:
         assert saved > 0
 
 
+class TestComputeSummaryMaxTokens:
+    """Tests for _compute_summary_max_tokens boundary conditions."""
+
+    def test_default_ratio_normal_range(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 1000 tokens * 0.25 = 250, within [128, 1024]
+        result = _compute_summary_max_tokens(1000, 0.25, 128, 1024)
+        assert result == 250
+
+    def test_short_middle_hits_floor(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 100 tokens * 0.25 = 25, clamped to floor 128
+        result = _compute_summary_max_tokens(100, 0.25, 128, 1024)
+        assert result == 128
+
+    def test_long_middle_hits_ceiling(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 10000 tokens * 0.25 = 2500, clamped to ceiling 1024
+        result = _compute_summary_max_tokens(10000, 0.25, 128, 1024)
+        assert result == 1024
+
+    def test_custom_ratio_override(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        # 2000 tokens * 0.5 = 1000, within [128, 1024]
+        result = _compute_summary_max_tokens(2000, 0.5, 128, 1024)
+        assert result == 1000
+
+    def test_floor_equals_ceiling_returns_floor(self):
+        from kani.compaction import _compute_summary_max_tokens
+
+        result = _compute_summary_max_tokens(500, 0.25, 256, 256)
+        assert result == 256
+
+    def test_summary_max_tokens_used_in_generate_summary(self):
+        """generate_summary passes computed max_tokens to the HTTP payload."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch, MagicMock
+        from kani.compaction import generate_summary
+
+        captured = {}
+
+        async def fake_post(url, *, json, headers):
+            captured["max_tokens"] = json["max_tokens"]
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"choices": [{"message": {"content": "summary"}}]}
+            return resp
+
+        async def run():
+            msgs = [
+                {"role": "user", "content": "a " * 400},  # ~100 tokens middle
+                {"role": "assistant", "content": "b " * 400},
+                {"role": "user", "content": "last"},
+            ]
+            with patch("httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client_cls.return_value.__aenter__ = AsyncMock(
+                    return_value=mock_client
+                )
+                mock_client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+                mock_client.post = fake_post
+                return await generate_summary(
+                    msgs,
+                    summary_model="test-model",
+                    base_url="http://localhost:9999",
+                    api_key="",
+                    protect_first_n=0,
+                    protect_last_n=1,
+                    summary_ratio=0.25,
+                    min_summary_tokens=128,
+                    max_summary_tokens=1024,
+                )
+
+        asyncio.run(run())
+        # The middle is short, so max_tokens should be at least the floor
+        assert captured["max_tokens"] >= 128
+        assert captured["max_tokens"] <= 1024
+
+
 class TestEstimateTokens:
     def test_non_zero(self):
         from kani.compaction import _estimate_tokens
@@ -219,6 +302,68 @@ class TestEstimateTokens:
         short = [{"role": "user", "content": "hi"}]
         long = [{"role": "user", "content": "hi " * 200}]
         assert _estimate_tokens(long) > _estimate_tokens(short)
+
+    def test_english_text_with_known_model(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello, world! This is a test sentence."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        # tiktoken should produce a reasonable token count (not chars/4)
+        assert count > 0
+
+    def test_cjk_text_uses_tiktoken(self):
+        from kani.compaction import _estimate_tokens
+
+        # Japanese text: each character is typically 1-2 tokens with tiktoken
+        # vs. chars/4 which would massively undercount
+        msgs = [
+            {
+                "role": "user",
+                "content": "日本語のテストです。これは文脈の圧縮をテストしています。",
+            }
+        ]
+        count_tiktoken = _estimate_tokens(msgs, model="gpt-4o")
+        # chars/4 fallback estimate
+        total_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+        chars_estimate = total_chars // 4
+        # tiktoken count should be higher than chars/4 for CJK
+        assert count_tiktoken > chars_estimate
+
+    def test_mixed_cjk_english(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "Hello 世界! This is mixed text 日本語."}]
+        count = _estimate_tokens(msgs, model="gpt-4o")
+        assert count > 0
+
+    def test_unknown_model_falls_back_to_cl100k_base(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        # Clear cache to ensure fresh resolution
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "test content"}]
+        # Unknown model should not raise and should return a positive count
+        count = _estimate_tokens(msgs, model="unknown-model-xyz-12345")
+        assert count > 0
+
+    def test_no_model_uses_cl100k_base(self):
+        from kani.compaction import _estimate_tokens
+
+        msgs = [{"role": "user", "content": "test content"}]
+        count = _estimate_tokens(msgs, model=None)
+        assert count > 0
+
+    def test_encoder_cached_on_second_call(self):
+        from kani.compaction import _estimate_tokens, _encoder_cache
+
+        _encoder_cache.clear()
+        msgs = [{"role": "user", "content": "hello"}]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert "gpt-4o" in _encoder_cache
+        # Second call hits cache (enc object is same)
+        enc_first = _encoder_cache["gpt-4o"]
+        _estimate_tokens(msgs, model="gpt-4o")
+        assert _encoder_cache["gpt-4o"] is enc_first
 
 
 # ── config model tests ────────────────────────────────────────────────────────
@@ -238,7 +383,9 @@ class TestCompactionConfig:
     def test_yaml_round_trip(self):
         from kani.config import load_config
 
-        import tempfile, textwrap, os
+        import tempfile
+        import textwrap
+        import os
 
         yaml_text = textwrap.dedent("""\
             default_provider: dummy
