@@ -40,7 +40,7 @@ default_profile: auto
 #       threshold_percent: 80.0    # compact when prompt ≥ 80% of context window
 #       protect_first_n: 1
 #       protect_last_n: 2
-#       summary_model: ""          # empty = use 'compress' profile primary model
+#       summary_profile: ""        # routing profile for summary model; empty = use default_profile
 #       summary_ratio: 0.25        # summary max_tokens = middle_tokens * ratio
 #       min_summary_tokens: 128    # floor for dynamic summary token budget
 #       max_summary_tokens: 1024   # ceiling for dynamic summary token budget

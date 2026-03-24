@@ -533,29 +533,21 @@ async def _resolve_compaction(
                 mode = "skipped"
         elif prompt_tokens >= threshold_tokens:
             # Phase A: generate summary inline
-            summary_model = sync_cfg.summary_model
+            summary_model = ""
             base_url_for_summary = ""
             api_key_for_summary = ""
 
-            if summary_model:
-                # find a provider that can serve this model
-                dp = _config.providers.get(_config.default_provider)
-                if dp:
-                    base_url_for_summary = dp.base_url.rstrip("/")
-                    api_key_for_summary = dp.api_key or ""
-            else:
-                # use compress profile via default provider
-                compress_profile = _config.profiles.get("compress")
-                if compress_profile:
-                    tier_cfg = compress_profile.tiers.get(
-                        "SIMPLE", next(iter(compress_profile.tiers.values()), None)
-                    )
-                    if tier_cfg:
-                        summary_model = tier_cfg.primary_model_id()
-                dp = _config.providers.get(_config.default_provider)
-                if dp:
-                    base_url_for_summary = dp.base_url.rstrip("/")
-                    api_key_for_summary = dp.api_key or ""
+            assert _router is not None
+            try:
+                decision = _router.resolve_model(
+                    profile=sync_cfg.summary_profile or None,
+                    tier="SIMPLE",
+                )
+                summary_model = decision.model
+                base_url_for_summary = decision.base_url.rstrip("/")
+                api_key_for_summary = decision.api_key
+            except Exception as exc:
+                logger.warning("COMPACTION resolve_model failed: %s", exc)
 
             if summary_model and base_url_for_summary:
                 try:
@@ -631,39 +623,32 @@ async def _resolve_compaction(
                 summary_id = enqueue_summary(session_id, snap_h)
                 worker = get_worker()
                 if worker is not None:
-                    dp = _config.providers.get(_config.default_provider)
-                    bg_model = sync_cfg.summary_model
-                    if not bg_model:
-                        compress_profile = _config.profiles.get("compress")
-                        if compress_profile:
-                            tier_cfg = compress_profile.tiers.get(
-                                "SIMPLE",
-                                next(iter(compress_profile.tiers.values()), None),
-                            )
-                            if tier_cfg:
-                                bg_model = tier_cfg.primary_model_id()
-                    if bg_model and dp:
-                        worker.schedule(
-                            summary_id,
-                            session_id,
-                            snap_h,
-                            messages,
-                            summary_model=bg_model,
-                            base_url=dp.base_url.rstrip("/"),
-                            api_key=dp.api_key or "",
-                            protect_first_n=sync_cfg.protect_first_n,
-                            protect_last_n=sync_cfg.protect_last_n,
-                            original_tokens=prompt_tokens,
-                            summary_ratio=sync_cfg.summary_ratio,
-                            min_summary_tokens=sync_cfg.min_summary_tokens,
-                            max_summary_tokens=sync_cfg.max_summary_tokens,
-                        )
-                        logger.info(
-                            "COMPACTION_BG queued session=%s snap=%s request_id=%s",
-                            session_id,
-                            snap_h[:8],
-                            request_id,
-                        )
+                    assert _router is not None
+                    bg_decision = _router.resolve_model(
+                        profile=sync_cfg.summary_profile or None,
+                        tier="SIMPLE",
+                    )
+                    worker.schedule(
+                        summary_id,
+                        session_id,
+                        snap_h,
+                        messages,
+                        summary_model=bg_decision.model,
+                        base_url=bg_decision.base_url.rstrip("/"),
+                        api_key=bg_decision.api_key,
+                        protect_first_n=sync_cfg.protect_first_n,
+                        protect_last_n=sync_cfg.protect_last_n,
+                        original_tokens=prompt_tokens,
+                        summary_ratio=sync_cfg.summary_ratio,
+                        min_summary_tokens=sync_cfg.min_summary_tokens,
+                        max_summary_tokens=sync_cfg.max_summary_tokens,
+                    )
+                    logger.info(
+                        "COMPACTION_BG queued session=%s snap=%s request_id=%s",
+                        session_id,
+                        snap_h[:8],
+                        request_id,
+                    )
         except Exception as exc:
             logger.warning("COMPACTION_BG scheduling failed: %s", exc)
 
