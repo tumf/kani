@@ -10,6 +10,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 from fastapi import FastAPI, Query, Request
@@ -201,6 +202,46 @@ def _get_default_provider_info() -> tuple[str, str, str]:
     # pick first model from provider as default
     model = dp.models[0] if dp.models else "gpt-4o-mini"
     return base_url, api_key, model
+
+
+def _collect_models() -> list[dict[str, Any]]:
+    """Return all available model objects in OpenAI list-models format."""
+    assert _config is not None
+    ts = int(time.time())
+    data: list[dict[str, Any]] = []
+
+    # Virtual kani models (one per profile)
+    for profile_name in _config.profiles:
+        data.append(
+            {
+                "id": f"kani/{profile_name}",
+                "object": "model",
+                "created": ts,
+                "owned_by": "kani",
+            }
+        )
+
+    # Collect underlying models from all profiles
+    seen_models: set[str] = set()
+    for profile in _config.profiles.values():
+        for tier_cfg in profile.tiers.values():
+            all_model_ids = [
+                tier_cfg.primary_model_id(),
+                *tier_cfg.fallback_model_ids(),
+            ]
+            for m in all_model_ids:
+                if m and m not in seen_models:
+                    seen_models.add(m)
+                    data.append(
+                        {
+                            "id": m,
+                            "object": "model",
+                            "created": ts,
+                            "owned_by": "provider",
+                        }
+                    )
+
+    return data
 
 
 def _log_usage(
@@ -910,42 +951,17 @@ async def chat_completions(request: Request):
 @app.get("/v1/models")
 async def list_models():
     """Return available kani/* virtual models plus underlying models."""
-    assert _config is not None
-    ts = int(time.time())
-    data: list[dict[str, Any]] = []
+    return {"object": "list", "data": _collect_models()}
 
-    # Virtual kani models (one per profile)
-    for profile_name in _config.profiles:
-        data.append(
-            {
-                "id": f"kani/{profile_name}",
-                "object": "model",
-                "created": ts,
-                "owned_by": "kani",
-            }
-        )
 
-    # Collect underlying models from all profiles
-    seen_models: set[str] = set()
-    for profile in _config.profiles.values():
-        for tier_cfg in profile.tiers.values():
-            all_model_ids = [
-                tier_cfg.primary_model_id(),
-                *tier_cfg.fallback_model_ids(),
-            ]
-            for m in all_model_ids:
-                if m not in seen_models:
-                    seen_models.add(m)
-                    data.append(
-                        {
-                            "id": m,
-                            "object": "model",
-                            "created": ts,
-                            "owned_by": "provider",
-                        }
-                    )
-
-    return {"object": "list", "data": data}
+@app.get("/v1/models/{model_id:path}")
+async def retrieve_model(model_id: str):
+    """Return single model object for compatibility with OpenAI SDK style clients."""
+    normalized = unquote(model_id)
+    for m in _collect_models():
+        if m.get("id") == normalized:
+            return m
+    return _openai_error(404, f"The model `{normalized}` does not exist")
 
 
 @app.get("/health")
