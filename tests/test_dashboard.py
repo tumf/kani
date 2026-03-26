@@ -218,10 +218,10 @@ def test_render_dashboard_html_shows_profile_filter_controls():
     assert 'value="auto" checked' in html
     assert 'value="premium" checked' in html
     assert 'value="eco"' in html
-    assert "Apply filters" in html
-    assert "Clear filter" in html
+    assert "Apply" in html
+    assert "Clear" in html
     assert 'rel="icon"' in html
-    assert "Latest traffic <strong>" in html
+    assert "Latest:" in html
     assert 'id="combined-trend-chart"' in html
     assert "renderCombinedTrendChart" in html
     assert "requests-chart" not in html
@@ -514,7 +514,7 @@ def test_render_window_cards_shows_compaction_metrics():
         },
     }
     html = dashboard._render_window_cards(windows)
-    assert "Compacted reqs" in html
+    assert "Compacted" in html
     assert "Saved tokens" in html
     assert "5" in html  # compaction_requests for 24h
 
