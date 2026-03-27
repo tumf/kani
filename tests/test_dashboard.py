@@ -221,6 +221,7 @@ def test_render_dashboard_html_shows_profile_filter_controls():
     assert "Apply" in html
     assert "Clear" in html
     assert 'rel="icon"' in html
+    assert "🦀" in html
     assert "Latest:" in html
     assert 'id="combined-trend-chart"' in html
     assert "renderCombinedTrendChart" in html

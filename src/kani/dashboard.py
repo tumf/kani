@@ -1240,13 +1240,8 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
     )
     filter_html = _render_profile_filters(available_profiles, selected_profiles)
 
-    # SVG icon for the logo (crab-inspired)
-    logo_svg = (
-        '<svg class="w-8 h-8" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">'
-        '<rect width="32" height="32" rx="8" fill="hsl(var(--primary))"/>'
-        '<text x="16" y="23" text-anchor="middle" font-size="20" fill="white">K</text>'
-        "</svg>"
-    )
+    # Crab icon for the logo and favicon.
+    logo_svg = '<div class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-xl leading-none text-primary-foreground shadow-sm">🦀</div>'
 
     # Theme toggle SVG icons
     sun_icon = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path stroke-linecap="round" d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'
@@ -1259,7 +1254,7 @@ def render_dashboard_html(stats: dict[str, Any]) -> str:
         '    <meta charset="utf-8">',
         '    <meta name="viewport" content="width=device-width, initial-scale=1">',
         "    <title>Kani Dashboard</title>",
-        '    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%228%22 fill=%22%232563EB%22/%3E%3Ctext x=%2216%22 y=%2223%22 text-anchor=%22middle%22 font-size=%2220%22 fill=%22white%22%3EK%3C/text%3E%3C/svg%3E">',
+        '    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ctext x=%2216%22 y=%2224%22 text-anchor=%22middle%22 font-size=%2224%22%3E%F0%9F%A6%80%3C/text%3E%3C/svg%3E">',
         '    <script src="https://d3js.org/d3.v7.min.js"></script>',
         '    <script src="https://cdn.tailwindcss.com"></script>',
         "    <script>",
