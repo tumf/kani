@@ -147,7 +147,8 @@ curl http://localhost:18420/v1/chat/completions \
 | `/v1/chat/completions` | POST | Main proxy (OpenAI-compatible) |
 | `/v1/models` | GET | List available models |
 | `/v1/route` | POST | Debug — returns routing decision without proxying |
-| `/health` | GET | Health check |
+| `/admin/reload-config` | POST | Admin-only safe config hot reload |
+| `/health` | GET | Health + active config version metadata |
 
 Routed responses include extra headers: `X-Kani-Tier`, `X-Kani-Model`, `X-Kani-Score`, `X-Kani-Signals`.
 
@@ -202,6 +203,8 @@ llm_classifier:
 - `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
 - When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
 - Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
+- Set `KANI_ADMIN_TOKEN` to enable `POST /admin/reload-config` (admin-only, separate from regular API keys)
+- Hot reload validates with `strict=True` and rejects non-reloadable field changes (`host`, `port`) with `409`
 
 ## Smart-proxy context compaction
 
@@ -259,6 +262,25 @@ Each routed response includes compaction headers:
 | `X-Kani-Compaction-Saved-Tokens` | integer | Estimated tokens saved |
 
 Structured log fields are emitted at `INFO` level on every compaction decision. Failures are logged at `WARNING` level and never propagate to the client.
+
+### Safe config hot reload (admin)
+
+Use admin-only config hot reload without restarting the proxy:
+
+```bash
+# 1) set an admin token (separate from normal API keys)
+export KANI_ADMIN_TOKEN="your-admin-token"
+
+# 2) trigger reload after editing config.yaml
+curl -X POST http://localhost:18420/admin/reload-config \
+  -H "Authorization: Bearer ${KANI_ADMIN_TOKEN}"
+```
+
+Behavior:
+
+- Reload is applied only when strict config validation succeeds.
+- In-flight requests keep the state snapshot captured at request start.
+- Changes to `host` / `port` are rejected as non-reloadable with `409` and require process restart.
 
 ### Docker Compose / local deployment
 

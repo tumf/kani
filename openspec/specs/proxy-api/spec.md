@@ -189,3 +189,6 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
   - `X-Kani-Provider`: 選択されたプロバイダ名
   - `X-Kani-Score`: スコア値 (小数点4桁)
   - `X-Kani-Signals`: シグナル JSON 文字列
+
+
+#

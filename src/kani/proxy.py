@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -9,6 +10,8 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote
 
@@ -63,9 +66,24 @@ logger.addHandler(_handler)
 
 # ── Global state ──────────────────────────────────────────────────────────────
 
+
+@dataclass(frozen=True)
+class RuntimeState:
+    """Active runtime state that can be atomically swapped on reload."""
+
+    config_path: str | None
+    config: KaniConfig
+    router: Router
+    config_loaded_at: str
+    version: int
+
+
+_state: RuntimeState | None = None
+# Backward-compat module globals (kept in sync with _state)
 _config: KaniConfig | None = None
 _router: Router | None = None
 _http: httpx.AsyncClient | None = None
+_reload_lock = asyncio.Lock()
 
 
 def _resolve_config_path(explicit: str | None = None) -> str | None:
@@ -75,13 +93,92 @@ def _resolve_config_path(explicit: str | None = None) -> str | None:
     return os.environ.get("KANI_CONFIG")
 
 
-def configure(config_path: str | None = None) -> None:
-    """Load config and build the router (called before app startup)."""
-    global _config, _router
+def _now_utc_iso() -> str:
+    """Return current UTC timestamp in RFC3339 format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _build_runtime_state(
+    config_path: str | None = None, *, strict: bool = False
+) -> RuntimeState:
+    """Load config and build an immutable runtime state snapshot."""
     path = _resolve_config_path(config_path)
-    _config = load_config(path)
-    _router = Router(_config)
-    logger.info("Loaded config from %s", path)
+    cfg = load_config(path, strict=strict)
+    router = Router(cfg)
+
+    next_version = 1
+    if _state is not None:
+        next_version = _state.version + 1
+
+    return RuntimeState(
+        config_path=path,
+        config=cfg,
+        router=router,
+        config_loaded_at=_now_utc_iso(),
+        version=next_version,
+    )
+
+
+def _activate_state(new_state: RuntimeState) -> None:
+    """Atomically publish runtime state and keep legacy globals synchronized."""
+    global _state, _config, _router
+    _state = new_state
+    _config = new_state.config
+    _router = new_state.router
+
+
+def _runtime_state_from_legacy_globals() -> RuntimeState | None:
+    """Build a fallback runtime state from legacy globals when available."""
+    if _config is None or _router is None:
+        return None
+    return RuntimeState(
+        config_path=_resolve_config_path(),
+        config=_config,
+        router=_router,
+        config_loaded_at=_now_utc_iso(),
+        version=0,
+    )
+
+
+def _require_runtime_state() -> RuntimeState:
+    """Return active runtime state or fail fast if not configured."""
+    legacy = _runtime_state_from_legacy_globals()
+
+    if _state is not None:
+        if legacy is not None and (
+            _state.config is not _config or _state.router is not _router
+        ):
+            # Test/backward-compat path where legacy globals are swapped directly.
+            return legacy
+        return _state
+
+    if legacy is not None:
+        return legacy
+
+    raise RuntimeError("Runtime state is not configured")
+
+
+def _build_compaction_worker(config: KaniConfig) -> BackgroundCompactionWorker | None:
+    """Build a background compaction worker from config, if enabled."""
+    cc = config.smart_proxy.context_compaction
+    if not cc.enabled:
+        return None
+
+    init_db()
+    max_conc = cc.background_precompaction.max_concurrency
+    return BackgroundCompactionWorker(max_concurrency=max_conc)
+
+
+def configure(config_path: str | None = None) -> None:
+    """Load config and build the runtime state (called before app startup)."""
+    state = _build_runtime_state(config_path, strict=False)
+    _activate_state(state)
+    logger.info(
+        "Runtime configured config_path=%s version=%d loaded_at=%s",
+        state.config_path,
+        state.version,
+        state.config_loaded_at,
+    )
 
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
@@ -90,37 +187,39 @@ def configure(config_path: str | None = None) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _http
-    if _config is None:
+    if _state is None:
         configure()
+
     _http = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
         limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
     )
     logger.info("HTTP connection pool started")
 
-    # Initialise compaction store and background worker
-    assert _config is not None
-    cc = _config.smart_proxy.context_compaction
-    if cc.enabled:
-        try:
-            init_db()
-            max_conc = cc.background_precompaction.max_concurrency
-            set_worker(BackgroundCompactionWorker(max_concurrency=max_conc))
-            logger.info("Smart-proxy context compaction enabled (worker started)")
-        except Exception:
-            logger.exception(
-                "Failed to initialise compaction store — disabling compaction"
+    runtime = _require_runtime_state()
+    worker = None
+    try:
+        worker = _build_compaction_worker(runtime.config)
+        set_worker(worker)
+        if worker is not None:
+            logger.info(
+                "Smart-proxy context compaction enabled (worker started) version=%d",
+                runtime.version,
             )
+    except Exception:
+        set_worker(None)
+        logger.exception("Failed to initialise compaction worker during startup")
 
     yield
 
     # Shutdown background worker
-    worker = get_worker()
-    if worker is not None:
-        await worker.shutdown()
+    active_worker = get_worker()
+    if active_worker is not None:
+        await active_worker.shutdown()
         set_worker(None)
 
-    await _http.aclose()
+    if _http is not None:
+        await _http.aclose()
     logger.info("HTTP connection pool closed")
 
 
@@ -131,7 +230,7 @@ app = FastAPI(title="kani", version="0.1.0", lifespan=lifespan)
 
 # ── Auth middleware ─────────────────────────────────────────────────────────
 
-_AUTH_EXEMPT = {"/health", "/docs", "/openapi.json"}
+_AUTH_EXEMPT = {"/health", "/docs", "/openapi.json", "/admin/reload-config"}
 
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
@@ -192,11 +291,10 @@ def _kani_headers(
     }
 
 
-def _get_default_provider_info() -> tuple[str, str, str]:
+def _get_default_provider_info(state: RuntimeState) -> tuple[str, str, str]:
     """Return (base_url, api_key, model) for the default provider."""
-    assert _config is not None
-    dp_name = _config.default_provider
-    dp = _config.providers[dp_name]
+    dp_name = state.config.default_provider
+    dp = state.config.providers[dp_name]
     base_url = dp.base_url.rstrip("/")
     api_key = dp.api_key or ""
     # pick first model from provider as default
@@ -204,14 +302,13 @@ def _get_default_provider_info() -> tuple[str, str, str]:
     return base_url, api_key, model
 
 
-def _collect_models() -> list[dict[str, Any]]:
+def _collect_models(state: RuntimeState) -> list[dict[str, Any]]:
     """Return all available model objects in OpenAI list-models format."""
-    assert _config is not None
     ts = int(time.time())
     data: list[dict[str, Any]] = []
 
     # Virtual kani models (one per profile)
-    for profile_name in _config.profiles:
+    for profile_name in state.config.profiles:
         data.append(
             {
                 "id": f"kani/{profile_name}",
@@ -223,7 +320,7 @@ def _collect_models() -> list[dict[str, Any]]:
 
     # Collect underlying models from all profiles
     seen_models: set[str] = set()
-    for profile in _config.profiles.values():
+    for profile in state.config.profiles.values():
         for tier_cfg in profile.tiers.values():
             all_model_ids = [
                 *tier_cfg.primary_model_ids(),
@@ -533,14 +630,16 @@ async def _resolve_compaction(
     profile: str | None,
     request_id: str | None,
     model: str | None = None,
+    *,
+    state: RuntimeState | None = None,
 ) -> CompactionResult:
     """Run compaction logic for a routed request.
 
     Returns a CompactionResult describing the outcome. On any error the result
     will have mode='failed' and the caller must use the original messages.
     """
-    assert _config is not None
-    cc = _config.smart_proxy.context_compaction
+    active_state = state or _require_runtime_state()
+    cc = active_state.config.smart_proxy.context_compaction
     if not cc.enabled:
         return CompactionResult(mode="off", messages=messages)
 
@@ -626,9 +725,8 @@ async def _resolve_compaction(
             base_url_for_summary = ""
             api_key_for_summary = ""
 
-            assert _router is not None
             try:
-                decision = _router.resolve_model(
+                decision = active_state.router.resolve_model(
                     profile=sync_cfg.summary_profile or None,
                     tier="SIMPLE",
                 )
@@ -845,8 +943,7 @@ async def _resolve_compaction(
                 summary_id = enqueue_summary(session_id, snap_h)
                 worker = get_worker()
                 if worker is not None:
-                    assert _router is not None
-                    bg_decision = _router.resolve_model(
+                    bg_decision = active_state.router.resolve_model(
                         profile=sync_cfg.summary_profile or None,
                         tier="SIMPLE",
                     )
@@ -896,6 +993,8 @@ async def _resolve_compaction(
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """Main proxy endpoint — OpenAI-compatible chat completions."""
+    state = _require_runtime_state()
+
     try:
         body: dict[str, Any] = await request.json()
     except Exception:
@@ -908,15 +1007,21 @@ async def chat_completions(request: Request):
         # ── Routed request ────────────────────────────────────────────────
         profile_name = model_field.split("/", 1)[1]  # e.g. "auto", "eco"
         request_id = uuid.uuid4().hex[:12]
-        assert _router is not None
         try:
-            decision: RoutingDecision = _router.route(messages, profile=profile_name)
+            decision: RoutingDecision = state.router.route(
+                messages, profile=profile_name
+            )
         except Exception as exc:
-            logger.exception("Router error")
+            logger.exception(
+                "Router error request_id=%s profile=%s state_version=%d",
+                request_id,
+                profile_name,
+                state.version,
+            )
             return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
         logger.info(
-            "ROUTE request_id=%s model=%s provider=%s tier=%s score=%.4f confidence=%.4f agentic=%.4f profile=%s",
+            "ROUTE request_id=%s model=%s provider=%s tier=%s score=%.4f confidence=%.4f agentic=%.4f profile=%s state_version=%d",
             request_id,
             decision.model,
             decision.provider,
@@ -925,11 +1030,17 @@ async def chat_completions(request: Request):
             decision.confidence,
             decision.agentic_score,
             profile_name,
+            state.version,
         )
 
         # Smart-proxy context compaction (Phase A + B)
         compaction_result = await _resolve_compaction(
-            messages, request, profile_name, request_id, model=decision.model
+            messages,
+            request,
+            profile_name,
+            request_id,
+            model=decision.model,
+            state=state,
         )
         if compaction_result.applied:
             body = dict(body)
@@ -953,34 +1064,37 @@ async def chat_completions(request: Request):
 
         return response
 
-    else:
-        # ── Pass-through to default provider ──────────────────────────────
-        assert _config is not None
-        base_url, api_key, _ = _get_default_provider_info()
-        logger.info(
-            "PASSTHROUGH model=%s provider=%s", model_field, _config.default_provider
-        )
-        return await _proxy_upstream(
-            base_url,
-            api_key,
-            body,
-            decision=None,
-            profile=None,
-            actual_provider=_config.default_provider,
-        )
+    # ── Pass-through to default provider ──────────────────────────────
+    base_url, api_key, _ = _get_default_provider_info(state)
+    logger.info(
+        "PASSTHROUGH model=%s provider=%s state_version=%d",
+        model_field,
+        state.config.default_provider,
+        state.version,
+    )
+    return await _proxy_upstream(
+        base_url,
+        api_key,
+        body,
+        decision=None,
+        profile=None,
+        actual_provider=state.config.default_provider,
+    )
 
 
 @app.get("/v1/models")
 async def list_models():
     """Return available kani/* virtual models plus underlying models."""
-    return {"object": "list", "data": _collect_models()}
+    state = _require_runtime_state()
+    return {"object": "list", "data": _collect_models(state)}
 
 
 @app.get("/v1/models/{model_id:path}")
 async def retrieve_model(model_id: str):
     """Return single model object for compatibility with OpenAI SDK style clients."""
+    state = _require_runtime_state()
     normalized = unquote(model_id)
-    for m in _collect_models():
+    for m in _collect_models(state):
         if m.get("id") == normalized:
             return m
     return _openai_error(404, f"The model `{normalized}` does not exist")
@@ -988,12 +1102,174 @@ async def retrieve_model(model_id: str):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    state = _require_runtime_state()
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "config_loaded_at": state.config_loaded_at,
+        "config_version": state.version,
+    }
+
+
+def _get_admin_token() -> str:
+    """Return admin token from environment."""
+    return os.environ.get("KANI_ADMIN_TOKEN", "").strip()
+
+
+def _validate_admin_authorization(request: Request) -> tuple[bool, str]:
+    """Validate admin bearer token for management endpoints."""
+    expected = _get_admin_token()
+    if not expected:
+        return False, "Admin token is not configured"
+
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return False, "Missing admin bearer token"
+
+    token = auth_header[7:]
+    if token != expected:
+        return False, "Invalid admin bearer token"
+
+    return True, ""
+
+
+def _non_reloadable_changes(current: KaniConfig, candidate: KaniConfig) -> list[str]:
+    """Return changed fields that require process restart."""
+    changed: list[str] = []
+    if current.host != candidate.host:
+        changed.append("host")
+    if current.port != candidate.port:
+        changed.append("port")
+    return changed
+
+
+async def _reload_compaction_worker(candidate: KaniConfig) -> tuple[bool, str]:
+    """Switch background compaction worker according to new config."""
+    old_worker = get_worker()
+    try:
+        new_worker = _build_compaction_worker(candidate)
+    except Exception as exc:
+        logger.exception("Failed to build compaction worker for reload")
+        return False, str(exc)
+
+    set_worker(new_worker)
+    if old_worker is not None and old_worker is not new_worker:
+        try:
+            await old_worker.shutdown()
+        except Exception:
+            logger.exception(
+                "Failed to shutdown previous compaction worker after reload"
+            )
+            return False, "Old compaction worker shutdown failed"
+
+    return True, ""
+
+
+@app.post("/admin/reload-config")
+async def reload_config(request: Request):
+    """Reload configuration safely with strict validation and atomic swap."""
+    is_authorized, auth_error = _validate_admin_authorization(request)
+    if not is_authorized:
+        return _openai_error(403, auth_error, "permission_error")
+
+    async with _reload_lock:
+        before = _require_runtime_state()
+        logger.info(
+            "ADMIN_RELOAD start config_path=%s version=%d",
+            before.config_path,
+            before.version,
+        )
+
+        try:
+            candidate = _build_runtime_state(before.config_path, strict=True)
+        except Exception as exc:
+            logger.exception(
+                "ADMIN_RELOAD strict validation failed config_path=%s version=%d",
+                before.config_path,
+                before.version,
+            )
+            return _openai_error(
+                400, f"Reload validation failed: {exc}", "config_error"
+            )
+
+        non_reloadable = _non_reloadable_changes(before.config, candidate.config)
+        if non_reloadable:
+            logger.warning(
+                "ADMIN_RELOAD rejected due to non-reloadable changes fields=%s config_path=%s version=%d",
+                non_reloadable,
+                before.config_path,
+                before.version,
+            )
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "ok": False,
+                    "reloaded": False,
+                    "config_path": before.config_path,
+                    "config_loaded_at": before.config_loaded_at,
+                    "non_reloadable_changes": non_reloadable,
+                    "error": "Restart required for non-reloadable fields",
+                },
+            )
+
+        _activate_state(candidate)
+
+        ok, worker_error = await _reload_compaction_worker(candidate.config)
+        if not ok:
+            _activate_state(before)
+            await _reload_compaction_worker(before.config)
+            logger.error(
+                "ADMIN_RELOAD rolled back due to worker error config_path=%s old_version=%d candidate_version=%d error=%s",
+                before.config_path,
+                before.version,
+                candidate.version,
+                worker_error,
+            )
+            return _openai_error(
+                500,
+                f"Reload failed during worker switch: {worker_error}",
+                "reload_error",
+            )
+
+        changed = {
+            "default_provider": before.config.default_provider
+            != candidate.config.default_provider,
+            "default_profile": before.config.default_profile
+            != candidate.config.default_profile,
+            "providers_count": len(before.config.providers)
+            != len(candidate.config.providers),
+            "profiles_count": len(before.config.profiles)
+            != len(candidate.config.profiles),
+            "compaction_enabled": before.config.smart_proxy.context_compaction.enabled
+            != candidate.config.smart_proxy.context_compaction.enabled,
+            "compaction_concurrency": before.config.smart_proxy.context_compaction.background_precompaction.max_concurrency
+            != candidate.config.smart_proxy.context_compaction.background_precompaction.max_concurrency,
+        }
+
+        logger.info(
+            "ADMIN_RELOAD success config_path=%s old_version=%d new_version=%d changed=%s",
+            candidate.config_path,
+            before.version,
+            candidate.version,
+            changed,
+        )
+
+        return {
+            "ok": True,
+            "reloaded": True,
+            "config_path": candidate.config_path,
+            "config_loaded_at": candidate.config_loaded_at,
+            "version": candidate.version,
+            "changed": changed,
+            "non_reloadable_changes": [],
+        }
 
 
 @app.post("/v1/route")
 async def route_debug(request: Request):
     """Debug endpoint: return routing decision without proxying."""
+    state = _require_runtime_state()
+
     try:
         body = await request.json()
     except Exception:
@@ -1002,11 +1278,14 @@ async def route_debug(request: Request):
     messages = body.get("messages", [])
     profile = body.get("profile", None)
 
-    assert _router is not None
     try:
-        decision = _router.route(messages, profile=profile)
+        decision = state.router.route(messages, profile=profile)
     except Exception as exc:
-        logger.exception("Router error in debug endpoint")
+        logger.exception(
+            "Router error in debug endpoint profile=%s state_version=%d",
+            profile,
+            state.version,
+        )
         return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
     return decision.model_dump()
