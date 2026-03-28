@@ -117,6 +117,45 @@ class TestResolveModel:
         decision = router.resolve_model(profile="eco", tier="COMPLEX")
         assert decision.model == "eco-simple"
 
+    def test_round_robin_primary_selection(self):
+        from kani.config import (
+            KaniConfig,
+            ProfileConfig,
+            ProviderConfig,
+            TierModelConfig,
+        )
+        from kani.router import Router
+
+        cfg = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                )
+            },
+            default_provider="openrouter",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(primary=["auto-a", "auto-b"]),
+                    }
+                )
+            },
+            default_profile="auto",
+        )
+        router = Router(cfg)
+
+        first = router.resolve_model(profile="auto", tier="SIMPLE")
+        second = router.resolve_model(profile="auto", tier="SIMPLE")
+        third = router.resolve_model(profile="auto", tier="SIMPLE")
+
+        assert [first.model, second.model, third.model] == [
+            "auto-a",
+            "auto-b",
+            "auto-a",
+        ]
+
 
 # ── compaction_store tests ────────────────────────────────────────────────────
 

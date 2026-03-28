@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -85,15 +85,36 @@ class ModelEntry(BaseModel):
 class TierModelConfig(BaseModel):
     """Model selection for a single complexity tier within a profile."""
 
-    primary: str | ModelEntry  # model ID string OR {model, provider}
+    primary: str | ModelEntry | list[str | ModelEntry]
     fallback: list[str | ModelEntry] = Field(default_factory=list)
     provider: str = "default"  # tier-level default provider
 
+    @model_validator(mode="after")
+    def _validate_primary_not_empty(self) -> "TierModelConfig":
+        """Ensure normalized primary candidate list is non-empty."""
+        if not self.resolve_primary_candidates():
+            raise ValueError("primary must contain at least one candidate")
+        return self
+
+    def resolve_primary_candidates(self) -> list[tuple[str, str]]:
+        """Return ordered list of (model_id, provider_name) primary candidates."""
+        primary_entries: list[str | ModelEntry]
+        if isinstance(self.primary, list):
+            primary_entries = self.primary
+        else:
+            primary_entries = [self.primary]
+
+        result: list[tuple[str, str]] = []
+        for entry in primary_entries:
+            if isinstance(entry, ModelEntry):
+                result.append((entry.model, entry.provider))
+            else:
+                result.append((entry, ""))
+        return result
+
     def resolve_primary(self) -> tuple[str, str]:
-        """Return (model_id, provider_name). Provider may be empty string."""
-        if isinstance(self.primary, ModelEntry):
-            return self.primary.model, self.primary.provider
-        return self.primary, ""
+        """Return first primary candidate for backward compatibility."""
+        return self.resolve_primary_candidates()[0]
 
     def resolve_fallbacks(self) -> list[tuple[str, str]]:
         """Return list of (model_id, provider_name) tuples."""
@@ -106,10 +127,13 @@ class TierModelConfig(BaseModel):
         return result
 
     def primary_model_id(self) -> str:
-        """Return just the model ID string (for backward compat)."""
-        if isinstance(self.primary, ModelEntry):
-            return self.primary.model
-        return self.primary
+        """Return first primary model ID (for backward compat)."""
+        model_id, _ = self.resolve_primary()
+        return model_id
+
+    def primary_model_ids(self) -> list[str]:
+        """Return all primary model IDs."""
+        return [model_id for model_id, _ in self.resolve_primary_candidates()]
 
     def fallback_model_ids(self) -> list[str]:
         """Return just the model ID strings (for backward compat)."""
@@ -313,6 +337,9 @@ def load_config(
     if overrides:
         raw = _deep_merge(raw, overrides)
 
+    # Normalize nullable tier fallbacks before validation
+    raw = _normalize_tier_fallback_null(raw)
+
     # Resolve env vars in raw data
     raw = resolve_env_recursive(raw)
 
@@ -333,3 +360,35 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = val
     return result
+
+
+def _normalize_tier_fallback_null(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize profiles.*.tiers.*.fallback null values to empty lists."""
+    normalized = dict(raw)
+    profiles = normalized.get("profiles")
+    if not isinstance(profiles, dict):
+        return normalized
+
+    normalized_profiles: dict[str, Any] = dict(profiles)
+    for profile_name, profile_value in profiles.items():
+        if not isinstance(profile_value, dict):
+            continue
+        tiers = profile_value.get("tiers")
+        if not isinstance(tiers, dict):
+            continue
+
+        normalized_tiers: dict[str, Any] = dict(tiers)
+        for tier_name, tier_value in tiers.items():
+            if not isinstance(tier_value, dict):
+                continue
+            if "fallback" in tier_value and tier_value["fallback"] is None:
+                normalized_tier = dict(tier_value)
+                normalized_tier["fallback"] = []
+                normalized_tiers[tier_name] = normalized_tier
+
+        normalized_profile = dict(profile_value)
+        normalized_profile["tiers"] = normalized_tiers
+        normalized_profiles[profile_name] = normalized_profile
+
+    normalized["profiles"] = normalized_profiles
+    return normalized

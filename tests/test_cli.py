@@ -88,6 +88,26 @@ class TestConfigExceptions:
         assert cfg.host == "0.0.0.0"
         assert cfg.profiles == {}
 
+    def test_tier_fallback_null_normalized_to_empty_list(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+        fallback: null
+"""
+        )
+        cfg = load_config(str(config_path), strict=True)
+        assert cfg.profiles["auto"].tiers["SIMPLE"].fallback == []
+
 
 class TestInitCommand:
     """kani init command."""

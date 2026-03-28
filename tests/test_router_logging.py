@@ -70,3 +70,59 @@ class TestRouterLogging:
         assert decision.tier == "MEDIUM"
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs["signals"] == detailed_signals
+
+    def test_round_robin_primary_selection_per_profile_tier(self) -> None:
+        config = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                )
+            },
+            default_provider="openrouter",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(
+                            primary=["model-a", "model-b"],
+                            fallback=[],
+                        ),
+                        "MEDIUM": TierModelConfig(primary="model-medium", fallback=[]),
+                    }
+                ),
+                "eco": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(primary=["eco-a", "eco-b"]),
+                        "MEDIUM": TierModelConfig(primary="eco-medium"),
+                    }
+                ),
+            },
+            default_profile="auto",
+        )
+        router = Router(config)
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "SIMPLE",
+                "score": 0.1,
+                "confidence": 0.9,
+                "signals": ["method"],
+                "signal_details": {"method": {"raw": "embedding"}},
+                "agentic_score": 0.0,
+            },
+        ):
+            auto_1 = router.route([{"role": "user", "content": "hi"}], profile="auto")
+            auto_2 = router.route([{"role": "user", "content": "hi"}], profile="auto")
+            eco_1 = router.route([{"role": "user", "content": "hi"}], profile="eco")
+            auto_3 = router.route([{"role": "user", "content": "hi"}], profile="auto")
+            eco_2 = router.route([{"role": "user", "content": "hi"}], profile="eco")
+
+        assert [auto_1.model, auto_2.model, auto_3.model] == [
+            "model-a",
+            "model-b",
+            "model-a",
+        ]
+        assert [eco_1.model, eco_2.model] == ["eco-a", "eco-b"]

@@ -54,6 +54,20 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
 
 プライマリモデルが 5xx エラーを返した場合、フォールバックモデルに順次試行しなければならない (SHALL)。
 
+#### Scenario: primary と fallback が重複する
+
+- GIVEN 選択された primary 候補 `A` が失敗し、fallback 列に同一 `model+provider` の `A` が含まれる
+- WHEN フォールバック試行列を構築する
+- THEN システムはその `A` を除外する
+- AND 同一リクエスト内で失敗済み primary を再試行しない
+
+#### Scenario: fallback 内の重複候補
+
+- GIVEN fallback 列に同一 `model+provider` 候補が複数回含まれる
+- WHEN フォールバック試行列を構築する
+- THEN システムは設定順を維持しつつ重複候補を一意化する
+- AND 各候補は最大 1 回だけ試行される
+
 #### Scenario: プライマリモデルの 5xx エラー (非ストリーミング)
 
 - GIVEN ルーティング決定にフォールバックモデルが定義されている
