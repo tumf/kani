@@ -217,6 +217,15 @@ class SmartProxyConfig(BaseModel):
     )
 
 
+class ModelCapabilityEntry(BaseModel):
+    """Model capability declaration using prefix-based matching."""
+
+    prefix: str  # e.g. 'claude-', 'gpt-4', 'google/gemini'
+    capabilities: list[str] = Field(
+        default_factory=list
+    )  # e.g. ['vision', 'tools', 'json_mode']
+
+
 class KaniConfig(BaseModel):
     """Top-level Kani configuration."""
 
@@ -228,6 +237,7 @@ class KaniConfig(BaseModel):
     default_profile: str = "auto"
     llm_classifier: LLMClassifierConfig | None = None
     smart_proxy: SmartProxyConfig = Field(default_factory=SmartProxyConfig)
+    model_capabilities: list[ModelCapabilityEntry] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

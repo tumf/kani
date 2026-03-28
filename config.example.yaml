@@ -54,6 +54,29 @@ default_profile: auto
 #     context_window_tokens: 128000
 
 # ---------------------------------------------------------------------------
+# Model Capabilities (prefix-based)
+# ---------------------------------------------------------------------------
+# Declare which models support which capabilities using prefix matching.
+# Supported capabilities: vision, tools, json_mode
+#
+# When a request requires a capability (e.g., image_url in messages, tools field,
+# or response_format.type = json_object), only models matching these prefixes
+# will be considered. If no capable model exists in the current tier, the router
+# escalates to higher tiers.
+#
+model_capabilities:
+    - prefix: "gpt-4"
+      capabilities: [vision, tools, json_mode]
+    - prefix: "gpt-4o"
+      capabilities: [vision, tools, json_mode]
+    - prefix: "claude-"
+      capabilities: [vision, tools, json_mode]
+    - prefix: "anthropic/claude"
+      capabilities: [vision, tools, json_mode]
+    - prefix: "google/gemini"
+      capabilities: [vision, tools, json_mode]
+
+# ---------------------------------------------------------------------------
 # Providers
 # ---------------------------------------------------------------------------
 providers:

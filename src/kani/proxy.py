@@ -54,7 +54,12 @@ from kani.dashboard import (
     recommended_dashboard_ingest_days,
     render_dashboard_html,
 )
-from kani.router import FallbackEntry, Router, RoutingDecision
+from kani.router import (
+    CapabilityNotSatisfiedError,
+    FallbackEntry,
+    Router,
+    RoutingDecision,
+)
 
 logger = logging.getLogger("kani.proxy")
 logger.setLevel(logging.DEBUG)
@@ -274,6 +279,40 @@ def _openai_error(
             }
         },
     )
+
+
+def _detect_required_capabilities(body: dict[str, Any]) -> set[str]:
+    """Detect required capabilities from request body.
+
+    Returns:
+        Set of required capabilities: 'vision', 'tools', 'json_mode'.
+    """
+    required: set[str] = set()
+
+    # Check for vision capability
+    messages = body.get("messages", [])
+    if isinstance(messages, list):
+        for msg in messages:
+            if isinstance(msg, dict) and "content" in msg:
+                content = msg["content"]
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "image_url":
+                            required.add("vision")
+                            break
+
+    # Check for tools/functions capability
+    if "tools" in body or "functions" in body:
+        required.add("tools")
+
+    # Check for json_mode capability
+    response_format = body.get("response_format")
+    if isinstance(response_format, dict):
+        fmt_type = response_format.get("type")
+        if fmt_type in ("json_object", "json_schema"):
+            required.add("json_mode")
+
+    return required
 
 
 def _kani_headers(
@@ -1007,9 +1046,28 @@ async def chat_completions(request: Request):
         # ── Routed request ────────────────────────────────────────────────
         profile_name = model_field.split("/", 1)[1]  # e.g. "auto", "eco"
         request_id = uuid.uuid4().hex[:12]
+
+        # Detect required capabilities from request body
+        required_capabilities = _detect_required_capabilities(body)
+
         try:
             decision: RoutingDecision = state.router.route(
-                messages, profile=profile_name
+                messages,
+                profile=profile_name,
+                required_capabilities=required_capabilities,
+            )
+        except CapabilityNotSatisfiedError:
+            logger.warning(
+                "Capability not satisfied request_id=%s profile=%s capabilities=%s state_version=%d",
+                request_id,
+                profile_name,
+                required_capabilities,
+                state.version,
+            )
+            return _openai_error(
+                400,
+                f"No available model supports required capabilities: {', '.join(sorted(required_capabilities))}",
+                "capability_not_satisfied",
             )
         except Exception as exc:
             logger.exception(

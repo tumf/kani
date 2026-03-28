@@ -14,6 +14,22 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+
+class CapabilityNotSatisfiedError(Exception):
+    """Raised when no model with required capabilities is available."""
+
+    def __init__(self, required_capabilities: set[str]) -> None:
+        self.required_capabilities = required_capabilities
+        caps_str = ", ".join(sorted(required_capabilities))
+        super().__init__(
+            f"No available model supports required capabilities: {caps_str}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Routing result
 # ---------------------------------------------------------------------------
 
@@ -41,6 +57,7 @@ class RoutingDecision(BaseModel):
     agentic_score: float = 0.0
     profile: str | None = None
     fallbacks: list[FallbackEntry] = Field(default_factory=list)
+    required_capabilities: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +89,7 @@ class Router:
         *,
         profile: str | None = None,
         model: str | None = None,
+        required_capabilities: set[str] | None = None,
     ) -> RoutingDecision:
         """Route a chat request to the right model+provider.
 
@@ -80,10 +98,16 @@ class Router:
             profile: Explicit profile name (auto/eco/premium/agentic).
             model: If set, may contain 'kani/<profile>' to select a profile,
                    or an explicit model ID to pass through.
+            required_capabilities: Set of required capabilities (e.g., {'vision', 'tools', 'json_mode'}).
 
         Returns:
             A RoutingDecision with all the info needed to proxy the request.
+
+        Raises:
+            CapabilityNotSatisfiedError: When no model with required capabilities is available.
         """
+        if required_capabilities is None:
+            required_capabilities = set()
         # --- Resolve profile from model string if needed ---
         profile = self._resolve_profile(profile, model)
 
@@ -125,14 +149,41 @@ class Router:
         if profile == "agentic" and agentic_score > 0.6 and tier == "SIMPLE":
             tier = "MEDIUM"
 
-        # --- Look up model in profile tier config ---
+        # --- Look up model in profile tier config with capability filtering ---
         resolved_tier, tier_cfg = self._resolve_tier_config(profile_cfg, tier)
+
+        # Try to find capable model in current tier, escalate if needed
+        primary_candidates = tier_cfg.resolve_primary_candidates()
+        capable_candidates = self._filter_capable_candidates(
+            primary_candidates, required_capabilities
+        )
+
+        # If no capable candidates in current tier, escalate to higher tiers
+        if not capable_candidates and required_capabilities:
+            current_tier = resolved_tier
+            for tier_name in self._escalation_path(profile_cfg, current_tier):
+                escalated_cfg = profile_cfg.tiers.get(tier_name)
+                if escalated_cfg is None:
+                    continue
+                escalated_candidates = escalated_cfg.resolve_primary_candidates()
+                capable_candidates = self._filter_capable_candidates(
+                    escalated_candidates, required_capabilities
+                )
+                if capable_candidates:
+                    resolved_tier = tier_name
+                    tier_cfg = escalated_cfg
+                    break
+
+        # If still no capable candidates, raise error
+        if not capable_candidates and required_capabilities:
+            raise CapabilityNotSatisfiedError(required_capabilities)
 
         # --- Resolve primary model and provider ---
         primary_model, primary_provider = self._select_primary_candidate(
             profile,
             resolved_tier,
             tier_cfg,
+            filter_to_candidates=capable_candidates if required_capabilities else None,
         )
         model_id = primary_model
 
@@ -141,9 +192,14 @@ class Router:
 
         provider_cfg = self._lookup_provider(provider_name)
 
-        # --- Build fallback entries ---
+        # --- Build fallback entries with capability filtering ---
         fallback_entries: list[FallbackEntry] = []
-        for fb_model, fb_provider in tier_cfg.resolve_fallbacks():
+        fallback_candidates = tier_cfg.resolve_fallbacks()
+        capable_fallbacks = self._filter_capable_candidates(
+            fallback_candidates, required_capabilities
+        )
+
+        for fb_model, fb_provider in capable_fallbacks:
             fb_provider_name = self._resolve_provider_name(
                 fb_provider, tier_cfg.provider
             )
@@ -186,6 +242,7 @@ class Router:
             agentic_score=agentic_score,
             profile=profile,
             fallbacks=fallback_entries,
+            required_capabilities=sorted(list(required_capabilities)),
         )
 
     def resolve_model(
@@ -270,6 +327,44 @@ class Router:
     # Internals
     # ------------------------------------------------------------------
 
+    def _get_model_capabilities(self, model_id: str) -> set[str]:
+        """Get capabilities for a model using prefix matching from config.
+
+        Returns:
+            Set of capability strings (e.g., {'vision', 'tools', 'json_mode'}).
+            Empty set if model not found in config.
+        """
+        for entry in self.config.model_capabilities:
+            if model_id.startswith(entry.prefix):
+                return set(entry.capabilities)
+        return set()
+
+    def _filter_capable_candidates(
+        self,
+        candidates: list[tuple[str, str]],
+        required_capabilities: set[str],
+    ) -> list[tuple[str, str]]:
+        """Filter candidates to those that have all required capabilities.
+
+        Args:
+            candidates: List of (model_id, provider_name) tuples.
+            required_capabilities: Set of required capability strings.
+
+        Returns:
+            Filtered list of candidates with all required capabilities.
+            Returns all candidates if no capabilities are required.
+        """
+        if not required_capabilities:
+            return candidates
+
+        capable = []
+        for model_id, provider_name in candidates:
+            model_caps = self._get_model_capabilities(model_id)
+            if required_capabilities.issubset(model_caps):
+                capable.append((model_id, provider_name))
+
+        return capable
+
     def _resolve_tier_config(self, profile_cfg: Any, tier: str) -> tuple[str, Any]:
         """Resolve a tier config, falling back to adjacent tiers if needed."""
         tier_cfg = profile_cfg.tiers.get(tier)
@@ -281,14 +376,49 @@ class Router:
             raise ValueError(f"No tier config for '{tier}'")
         return fallback_tier, profile_cfg.tiers[fallback_tier]
 
+    def _escalation_path(self, profile_cfg: Any, current_tier: str) -> list[str]:
+        """Generate escalation path from current tier to higher tiers.
+
+        Searches upward in _TIER_ORDER, skipping the current tier.
+        """
+        try:
+            idx = _TIER_ORDER.index(current_tier)
+        except ValueError:
+            idx = 1  # MEDIUM
+
+        path = []
+        for offset in range(1, len(_TIER_ORDER)):
+            candidate_idx = idx + offset
+            if 0 <= candidate_idx < len(_TIER_ORDER):
+                candidate = _TIER_ORDER[candidate_idx]
+                if candidate in profile_cfg.tiers:
+                    path.append(candidate)
+        return path
+
     def _select_primary_candidate(
         self,
         profile: str,
         tier: str,
         tier_cfg: Any,
+        filter_to_candidates: list[tuple[str, str]] | None = None,
     ) -> tuple[str, str]:
-        """Select a primary candidate via per profile+tier round-robin."""
-        candidates = tier_cfg.resolve_primary_candidates()
+        """Select a primary candidate via per profile+tier round-robin.
+
+        Args:
+            profile: Profile name.
+            tier: Tier name.
+            tier_cfg: Tier config.
+            filter_to_candidates: If provided, select only from this list.
+                                 Otherwise use all primary candidates.
+
+        Returns:
+            Selected (model_id, provider_name) tuple.
+        """
+        if filter_to_candidates is not None:
+            candidates = filter_to_candidates
+        else:
+            candidates = tier_cfg.resolve_primary_candidates()
+
         if len(candidates) == 1:
             return candidates[0]
 
