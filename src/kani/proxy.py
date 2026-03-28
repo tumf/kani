@@ -51,7 +51,7 @@ from kani.dashboard import (
     recommended_dashboard_ingest_days,
     render_dashboard_html,
 )
-from kani.router import Router, RoutingDecision
+from kani.router import FallbackEntry, Router, RoutingDecision
 
 logger = logging.getLogger("kani.proxy")
 logger.setLevel(logging.DEBUG)
@@ -226,15 +226,15 @@ def _collect_models() -> list[dict[str, Any]]:
     for profile in _config.profiles.values():
         for tier_cfg in profile.tiers.values():
             all_model_ids = [
-                tier_cfg.primary_model_id(),
+                *tier_cfg.primary_model_ids(),
                 *tier_cfg.fallback_model_ids(),
             ]
-            for m in all_model_ids:
-                if m and m not in seen_models:
-                    seen_models.add(m)
+            for model_id in all_model_ids:
+                if model_id and model_id not in seen_models:
+                    seen_models.add(model_id)
                     data.append(
                         {
-                            "id": m,
+                            "id": model_id,
                             "object": "model",
                             "created": ts,
                             "owned_by": "provider",
@@ -437,6 +437,26 @@ def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
     return False
 
 
+def _unique_fallbacks(decision: RoutingDecision) -> list[tuple[int, FallbackEntry]]:
+    """Return unique fallback entries excluding the selected primary candidate."""
+    primary_key = (decision.model, decision.provider)
+    seen: set[tuple[str, str]] = {primary_key}
+    unique: list[tuple[int, FallbackEntry]] = []
+    for original_idx, fb in enumerate(decision.fallbacks):
+        fb_key = (fb.model, fb.provider)
+        if fb_key in seen:
+            logger.debug(
+                "Skip fallback duplicate model=%s provider=%s original_idx=%d",
+                fb.model,
+                fb.provider,
+                original_idx,
+            )
+            continue
+        seen.add(fb_key)
+        unique.append((original_idx, fb))
+    return unique
+
+
 async def _try_with_fallbacks(
     body: dict[str, Any],
     decision: RoutingDecision,
@@ -461,15 +481,17 @@ async def _try_with_fallbacks(
     if not _is_retryable_error(result):
         return result
 
-    # Try fallbacks
-    for i, fb in enumerate(decision.fallbacks):
+    # Try fallbacks (exclude selected primary + deduplicate fallback candidates)
+    unique_fallbacks = _unique_fallbacks(decision)
+    for i, (original_idx, fb) in enumerate(unique_fallbacks):
         logger.warning(
-            "FALLBACK [%d/%d] model=%s provider=%s (primary=%s failed)",
+            "FALLBACK [%d/%d] model=%s provider=%s (primary=%s failed, source_idx=%d)",
             i + 1,
-            len(decision.fallbacks),
+            len(unique_fallbacks),
             fb.model,
             fb.provider,
             decision.model,
+            original_idx,
         )
         fb_body = dict(body)
         fb_body["model"] = fb.model

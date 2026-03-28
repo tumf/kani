@@ -74,8 +74,9 @@ providers:
 # Routing Profiles
 # ---------------------------------------------------------------------------
 # Each profile has four tiers: SIMPLE / MEDIUM / COMPLEX / REASONING.
-# primary: model to use first
+# primary: model to use first (string/object) or ordered list for round-robin
 # fallback: list of models tried on upstream error (5xx / timeout)
+#   - fallback: null is allowed and treated as []
 # provider: optional override; defaults to default_provider
 #
 # Tier selection is automatic based on prompt complexity scoring.
