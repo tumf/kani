@@ -176,11 +176,12 @@ profiles:
   auto:
     tiers:
       SIMPLE:
-        primary: "google/gemini-2.5-flash"
-        fallback: ["google/gemini-2.5-flash-lite", "nvidia/gpt-oss-120b"]
+        # primary can be a single model or an ordered list for round-robin
+        primary: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
+        fallback: ["nvidia/gpt-oss-120b"]
       MEDIUM:
         primary: "moonshotai/kimi-k2.5"
-        fallback: ["google/gemini-2.5-flash"]
+        fallback: null  # allowed; normalized to []
       COMPLEX:
         primary: "google/gemini-3.1-pro"
         fallback: ["anthropic/claude-sonnet-4.6"]
@@ -198,6 +199,9 @@ llm_classifier:
 
 - `${VAR}` syntax resolves environment variables
 - Each tier can specify its own `provider` or inherit `default_provider`
+- `primary` accepts string / `{model, provider}` / list of those; list entries are selected round-robin per `profile+tier`
+- `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
+- When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
 - Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
 - Set `KANI_ADMIN_TOKEN` to enable `POST /admin/reload-config` (admin-only, separate from regular API keys)
 - Hot reload validates with `strict=True` and rejects non-reloadable field changes (`host`, `port`) with `409`

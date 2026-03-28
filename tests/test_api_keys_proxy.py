@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from kani.api_keys import generate_key, has_keys
-from kani.proxy import app, configure
+from kani.proxy import _try_with_fallbacks, app, configure
+from kani.router import FallbackEntry, RoutingDecision
 
 
 @pytest.fixture(autouse=True)
@@ -33,12 +35,12 @@ profiles:
   auto:
     tiers:
       SIMPLE:
-        primary: "test-model"
+        primary: ["test-model-a", "test-model-b"]
         fallback: []
         provider: default
       MEDIUM:
         primary: "test-model"
-        fallback: []
+        fallback: null
         provider: default
       COMPLEX:
         primary: "test-model"
@@ -112,3 +114,90 @@ class TestWithKeysConfigured:
             },
         )
         assert resp.status_code == 401
+
+
+class TestProxyFallbackBehavior:
+    @pytest.mark.asyncio
+    async def test_fallbacks_skip_primary_duplicate_and_dedupe(self):
+        decision = RoutingDecision(
+            model="model-primary",
+            provider="primary-provider",
+            base_url="https://primary.example/v1",
+            api_key="primary-key",
+            tier="SIMPLE",
+            score=0.1,
+            confidence=0.9,
+            profile="auto",
+            fallbacks=[
+                FallbackEntry(
+                    model="model-primary",
+                    provider="primary-provider",
+                    base_url="https://primary.example/v1",
+                    api_key="fb-dup-primary",
+                ),
+                FallbackEntry(
+                    model="model-fb-1",
+                    provider="fb-provider",
+                    base_url="https://fb1.example/v1",
+                    api_key="fb-key-1",
+                ),
+                FallbackEntry(
+                    model="model-fb-1",
+                    provider="fb-provider",
+                    base_url="https://fb1-dup.example/v1",
+                    api_key="fb-key-dup",
+                ),
+                FallbackEntry(
+                    model="model-fb-2",
+                    provider="fb-provider-2",
+                    base_url="https://fb2.example/v1",
+                    api_key="fb-key-2",
+                ),
+            ],
+        )
+
+        calls: list[tuple[str, str, str]] = []
+
+        async def fake_proxy_upstream(
+            base_url,
+            api_key,
+            body,
+            _decision,
+            profile=None,
+            *,
+            actual_provider=None,
+            request_id=None,
+            compaction_result=None,
+        ):
+            _ = profile, request_id, compaction_result
+            calls.append((body["model"], actual_provider or "", base_url))
+            if len(calls) < 3:
+                return JSONResponse(status_code=502, content={"error": "retry"})
+            return JSONResponse(status_code=200, content={"ok": True})
+
+        from unittest.mock import patch
+
+        with patch("kani.proxy._proxy_upstream", side_effect=fake_proxy_upstream):
+            result = await _try_with_fallbacks(
+                {
+                    "model": decision.model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                decision,
+                "auto",
+            )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 200
+        assert calls == [
+            ("model-primary", "primary-provider", "https://primary.example/v1"),
+            ("model-fb-1", "fb-provider", "https://fb1.example/v1"),
+            ("model-fb-2", "fb-provider-2", "https://fb2.example/v1"),
+        ]
+
+    def test_models_list_includes_all_primary_candidates(self, client):
+        resp = client.get("/v1/models")
+        assert resp.status_code == 200
+        ids = {item["id"] for item in resp.json()["data"]}
+        assert "test-model-a" in ids
+        assert "test-model-b" in ids

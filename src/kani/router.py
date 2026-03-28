@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from threading import Lock
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -58,6 +59,8 @@ class Router:
 
     def __init__(self, config: KaniConfig) -> None:
         self.config = config
+        self._rr_state: dict[tuple[str, str], int] = {}
+        self._rr_lock = Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -123,15 +126,14 @@ class Router:
             tier = "MEDIUM"
 
         # --- Look up model in profile tier config ---
-        tier_cfg = profile_cfg.tiers.get(tier)
-        if tier_cfg is None:
-            # Fall back through tiers
-            tier_cfg = self._fallback_tier(profile_cfg, tier)
-            if tier_cfg is None:
-                raise ValueError(f"No tier config for '{tier}' in profile '{profile}'")
+        resolved_tier, tier_cfg = self._resolve_tier_config(profile_cfg, tier)
 
         # --- Resolve primary model and provider ---
-        primary_model, primary_provider = tier_cfg.resolve_primary()
+        primary_model, primary_provider = self._select_primary_candidate(
+            profile,
+            resolved_tier,
+            tier_cfg,
+        )
         model_id = primary_model
 
         # Resolve provider name: entry override > tier default > config default
@@ -225,15 +227,13 @@ class Router:
                 f"and default profile '{self.config.default_profile}' is also missing."
             )
 
-        tier_cfg = profile_cfg.tiers.get(tier)
-        if tier_cfg is None:
-            tier_cfg = self._fallback_tier(profile_cfg, tier)
-            if tier_cfg is None:
-                raise ValueError(
-                    f"No tier config for '{tier}' in profile '{resolved_profile}'"
-                )
+        resolved_tier, tier_cfg = self._resolve_tier_config(profile_cfg, tier)
 
-        primary_model, primary_provider = tier_cfg.resolve_primary()
+        primary_model, primary_provider = self._select_primary_candidate(
+            resolved_profile,
+            resolved_tier,
+            tier_cfg,
+        )
         provider_name = self._resolve_provider_name(primary_provider, tier_cfg.provider)
         provider_cfg = self._lookup_provider(provider_name)
 
@@ -269,6 +269,46 @@ class Router:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _resolve_tier_config(self, profile_cfg: Any, tier: str) -> tuple[str, Any]:
+        """Resolve a tier config, falling back to adjacent tiers if needed."""
+        tier_cfg = profile_cfg.tiers.get(tier)
+        if tier_cfg is not None:
+            return tier, tier_cfg
+
+        fallback_tier = self._fallback_tier_name(profile_cfg, tier)
+        if fallback_tier is None:
+            raise ValueError(f"No tier config for '{tier}'")
+        return fallback_tier, profile_cfg.tiers[fallback_tier]
+
+    def _select_primary_candidate(
+        self,
+        profile: str,
+        tier: str,
+        tier_cfg: Any,
+    ) -> tuple[str, str]:
+        """Select a primary candidate via per profile+tier round-robin."""
+        candidates = tier_cfg.resolve_primary_candidates()
+        if len(candidates) == 1:
+            return candidates[0]
+
+        state_key = (profile, tier)
+        with self._rr_lock:
+            next_idx = self._rr_state.get(state_key, 0)
+            selected_idx = next_idx % len(candidates)
+            self._rr_state[state_key] = (selected_idx + 1) % len(candidates)
+
+        selected = candidates[selected_idx]
+        log.debug(
+            "Primary round-robin selected profile=%s tier=%s index=%d/%d model=%s provider=%s",
+            profile,
+            tier,
+            selected_idx,
+            len(candidates),
+            selected[0],
+            selected[1] or "",
+        )
+        return selected
 
     def _resolve_provider_name(self, entry_provider: str, tier_provider: str) -> str:
         """Resolve provider name: entry override > tier default > config default."""
@@ -408,8 +448,8 @@ class Router:
         }
 
     @staticmethod
-    def _fallback_tier(profile_cfg: Any, tier: str) -> Any:
-        """Try adjacent tiers if the exact tier is missing from the profile."""
+    def _fallback_tier_name(profile_cfg: Any, tier: str) -> str | None:
+        """Try adjacent tiers and return fallback tier name."""
         try:
             idx = _TIER_ORDER.index(tier)
         except ValueError:
@@ -422,5 +462,13 @@ class Router:
                 if 0 <= candidate_idx < len(_TIER_ORDER):
                     candidate = _TIER_ORDER[candidate_idx]
                     if candidate in profile_cfg.tiers:
-                        return profile_cfg.tiers[candidate]
+                        return candidate
         return None
+
+    @classmethod
+    def _fallback_tier(cls, profile_cfg: Any, tier: str) -> Any:
+        """Try adjacent tiers if the exact tier is missing from the profile."""
+        fallback_tier = cls._fallback_tier_name(profile_cfg, tier)
+        if fallback_tier is None:
+            return None
+        return profile_cfg.tiers[fallback_tier]
