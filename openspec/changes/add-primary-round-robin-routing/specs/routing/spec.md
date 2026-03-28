@@ -18,6 +18,18 @@
 - THEN システムは配列順の primary 候補列として受理する
 - AND 候補列は空であってはならない
 
+### Requirement: fallback null 正規化
+
+`profiles.*.tiers.*.fallback` は `null` で記述されても tier fallback の空リストとして扱われなければならない (SHALL)。
+
+#### Scenario: fallback が null として記述される
+
+- GIVEN profiles 内の tier 設定で `fallback:` が YAML 上 `null` として解釈される
+- WHEN 設定を読み込む
+- THEN システムはその `fallback` を空リストとして正規化してから検証する
+- AND 結果の tier 設定はフォールバックモデルを持たない
+- AND 他の設定キーには同じ null 正規化を自動適用しない
+
 ### Requirement: Primary ラウンドロビン選択
 
 ルーターは `profile+tier` 単位で primary 候補をラウンドロビン選択しなければならない (SHALL)。
