@@ -65,6 +65,9 @@ class TestNoKeysConfigured:
     def test_health_no_auth(self, client):
         resp = client.get("/health")
         assert resp.status_code == 200
+        data = resp.json()
+        assert "config_loaded_at" in data
+        assert "config_version" in data
 
     def test_models_no_auth(self, client):
         assert not has_keys()
@@ -79,6 +82,9 @@ class TestWithKeysConfigured:
         generate_key("admin")
         resp = client.get("/health")
         assert resp.status_code == 200
+        data = resp.json()
+        assert "config_loaded_at" in data
+        assert "config_version" in data
 
     def test_models_requires_auth(self, client):
         generate_key("admin")
