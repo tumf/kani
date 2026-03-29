@@ -14,17 +14,19 @@ OpenAI API-compatible proxy — drop in as a base URL and let kani pick the righ
 ## How it works
 
 ```
-Request → Embedding Classifier → Tier → Model Selection → Upstream Provider
-                 │
+Request → Embedding Classifier → Tier → Capability Filter → Model Selection (round-robin) → Upstream Provider
+                 │                              │
+                 │                              └─ no capable model → escalate tier
                  └─ uncertain / unavailable → LLM Classifier → conservative default
 ```
 
-**Classification pipeline (3 layers):**
+**Classification pipeline:**
 
 1. **Embedding classifier** — pre-trained sklearn model (primary path)
 2. **LLM-as-judge** — cheap fallback for uncertain or unavailable embedding decisions
 3. **Agentic classifier** — for the `agentic` profile, SIMPLE prompts can be re-labeled as action-oriented before routing
 4. **Conservative default** — fall back to `MEDIUM` when neither classifier can decide
+5. **Capability filter** — auto-detects vision/tools/json_mode from the request and escalates to a capable model
 
 Every request is logged to `$XDG_STATE_HOME/kani/log/` (default: `~/.local/state/kani/log/`) as training data for future model improvement.
 
@@ -140,6 +142,32 @@ curl http://localhost:18420/v1/chat/completions \
 | `kani/premium` | Best quality models | Critical tasks |
 | `kani/agentic` | Tool-use optimized | Agent workflows |
 
+## Capability-aware routing
+
+kani automatically detects required capabilities from the request and routes to a model that supports them. If no model in the scored tier has the required capabilities, kani escalates to higher tiers.
+
+**Detected capabilities:**
+
+| Capability | Trigger |
+|------------|---------|
+| `vision` | `image_url` content block in messages |
+| `tools` | `tools` or `functions` field in request |
+| `json_mode` | `response_format.type` is `json_object` or `json_schema` |
+
+**Configuration:** declare model capabilities via prefix matching in `config.yaml`:
+
+```yaml
+model_capabilities:
+  - prefix: "anthropic/claude-"
+    capabilities: [vision, tools, json_mode]
+  - prefix: "google/gemini-"
+    capabilities: [vision, tools, json_mode]
+  - prefix: "openai/gpt-4"
+    capabilities: [vision, tools, json_mode]
+```
+
+When no `model_capabilities` are configured, capability filtering is skipped and routing works as before.
+
 ## API endpoints
 
 | Endpoint | Method | Description |
@@ -199,7 +227,7 @@ llm_classifier:
 
 - `${VAR}` syntax resolves environment variables
 - Each tier can specify its own `provider` or inherit `default_provider`
-- `primary` accepts string / `{model, provider}` / list of those; list entries are selected round-robin per `profile+tier`
+- `primary` accepts a string, `{model, provider}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
 - `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
 - When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
 - Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
@@ -427,7 +455,7 @@ src/kani/
 
 ```bash
 uv sync
-uv run pytest tests/ -q    # 42 tests
+uv run pytest tests/ -q    # 176 tests
 uv run ruff check src/
 uv run pyright src/
 ```
