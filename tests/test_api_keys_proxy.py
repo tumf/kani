@@ -195,6 +195,65 @@ class TestProxyFallbackBehavior:
             ("model-fb-2", "fb-provider-2", "https://fb2.example/v1"),
         ]
 
+    @pytest.mark.asyncio
+    async def test_fallbacks_retry_on_rate_limit(self):
+        decision = RoutingDecision(
+            model="model-primary",
+            provider="primary-provider",
+            base_url="https://primary.example/v1",
+            api_key="primary-key",
+            tier="SIMPLE",
+            score=0.1,
+            confidence=0.9,
+            profile="auto",
+            fallbacks=[
+                FallbackEntry(
+                    model="model-fb-1",
+                    provider="fb-provider",
+                    base_url="https://fb1.example/v1",
+                    api_key="fb-key-1",
+                )
+            ],
+        )
+
+        calls: list[tuple[str, str, str]] = []
+
+        async def fake_proxy_upstream(
+            base_url,
+            api_key,
+            body,
+            _decision,
+            profile=None,
+            *,
+            actual_provider=None,
+            request_id=None,
+            compaction_result=None,
+        ):
+            _ = api_key, profile, request_id, compaction_result
+            calls.append((body["model"], actual_provider or "", base_url))
+            if len(calls) == 1:
+                return JSONResponse(status_code=429, content={"error": "rate_limited"})
+            return JSONResponse(status_code=200, content={"ok": True})
+
+        from unittest.mock import patch
+
+        with patch("kani.proxy._proxy_upstream", side_effect=fake_proxy_upstream):
+            result = await _try_with_fallbacks(
+                {
+                    "model": decision.model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                decision,
+                "auto",
+            )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 200
+        assert calls == [
+            ("model-primary", "primary-provider", "https://primary.example/v1"),
+            ("model-fb-1", "fb-provider", "https://fb1.example/v1"),
+        ]
+
     def test_models_list_includes_all_primary_candidates(self, client):
         resp = client.get("/v1/models")
         assert resp.status_code == 200

@@ -567,9 +567,9 @@ async def _proxy_upstream(
 
 
 def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
-    """Check if a response is a retryable error (5xx, timeout, connection error)."""
+    """Check if a response is a retryable error (429, 5xx, timeout, connection error)."""
     if isinstance(result, JSONResponse):
-        return result.status_code >= 500
+        return result.status_code == 429 or result.status_code >= 500
     return False
 
 
