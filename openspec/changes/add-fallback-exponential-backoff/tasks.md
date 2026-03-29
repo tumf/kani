@@ -12,3 +12,7 @@
 
 - Consider durable/shared cooldown storage if kani later runs with multiple worker processes or multiple instances behind a load balancer.
 - Consider internal diagnostics or dashboard surfacing for current cooldown entries if operators need live visibility.
+
+## Acceptance #1 Failure Follow-up
+
+- [ ] Commit or revert the current implementation changes so `git status --porcelain` is empty before rerunning acceptance.
