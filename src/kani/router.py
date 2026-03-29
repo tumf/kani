@@ -194,8 +194,32 @@ class Router:
             selection_candidates,
             tier_provider=tier_cfg.provider,
         )
+
+        fallback_candidates = tier_cfg.resolve_fallbacks()
+        capable_fallbacks = self._filter_capable_candidates(
+            fallback_candidates, required_capabilities
+        )
+        cooled_fallback_candidates = self._filter_cooled_candidates(
+            capable_fallbacks,
+            tier_provider=tier_cfg.provider,
+        )
+
+        promoted_from_fallback = False
         if cooled_primary_candidates:
             selection_candidates = cooled_primary_candidates
+        elif selection_candidates and cooled_fallback_candidates:
+            promoted_from_fallback = True
+            selection_candidates = cooled_fallback_candidates
+            log.warning(
+                "All primary candidates cooling down; promoting fallback candidate profile=%s tier=%s fallback_count=%d",
+                profile,
+                resolved_tier,
+                len(selection_candidates),
+            )
+        elif selection_candidates:
+            raise ValueError(
+                f"No routable primary candidates remain after cooldown filtering for profile={profile} tier={resolved_tier}"
+            )
 
         # --- Resolve primary model and provider ---
         primary_model, primary_provider = self._select_primary_candidate(
@@ -213,15 +237,15 @@ class Router:
 
         # --- Build fallback entries with capability filtering ---
         fallback_entries: list[FallbackEntry] = []
-        fallback_candidates = tier_cfg.resolve_fallbacks()
-        capable_fallbacks = self._filter_capable_candidates(
-            fallback_candidates, required_capabilities
-        )
 
         for fb_model, fb_provider in capable_fallbacks:
             fb_provider_name = self._resolve_provider_name(
                 fb_provider, tier_cfg.provider
             )
+            if promoted_from_fallback and (
+                fb_model == model_id and fb_provider_name == provider_name
+            ):
+                continue
             fb_provider_cfg = self._lookup_provider(fb_provider_name)
             fallback_entries.append(
                 FallbackEntry(

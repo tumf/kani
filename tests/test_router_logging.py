@@ -245,3 +245,58 @@ class TestRouterLogging:
 
         assert decision.model == "model-a"
         assert decision.provider == "alt"
+
+    def test_promotes_fallback_when_all_primary_candidates_are_in_cooldown(
+        self,
+    ) -> None:
+        config = KaniConfig(
+            providers={
+                "cliproxy": ProviderConfig(
+                    name="cliproxy",
+                    base_url="http://cliproxy.example/v1",
+                    api_key="test-key",
+                )
+            },
+            default_provider="cliproxy",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(
+                            primary="claude-opus-4-6",
+                            fallback=["claude-opus-4-6", "gpt-5.4"],
+                            provider="default",
+                        )
+                    }
+                )
+            },
+            default_profile="auto",
+            smart_proxy={
+                "fallback_backoff": {
+                    "enabled": True,
+                    "initial_delay_seconds": 5,
+                    "multiplier": 2,
+                    "max_delay_seconds": 60,
+                }
+            },
+        )
+        backoff_state = FallbackBackoffState(config.smart_proxy.fallback_backoff)
+        backoff_state.record_retryable_failure("claude-opus-4-6", "cliproxy")
+        router = Router(config, fallback_backoff_state=backoff_state)
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "SIMPLE",
+                "score": 0.8,
+                "confidence": 0.8,
+                "signals": ["method"],
+                "signal_details": {"method": {"raw": "embedding"}},
+                "agentic_score": 0.0,
+            },
+        ):
+            decision = router.route([{"role": "user", "content": "hi"}], profile="auto")
+
+        assert decision.model == "gpt-5.4"
+        assert decision.provider == "cliproxy"
+        assert [fb.model for fb in decision.fallbacks] == ["claude-opus-4-6"]
