@@ -218,6 +218,13 @@ profiles:
         fallback: ["anthropic/claude-sonnet-4.6"]
       # provider: per-tier override (optional)
 
+smart_proxy:
+  fallback_backoff:
+    enabled: true
+    initial_delay_seconds: 5
+    multiplier: 2
+    max_delay_seconds: 300
+
 # LLM classifier for low-confidence escalation (optional)
 llm_classifier:
   model: "google/gemini-2.5-flash-lite"
@@ -230,6 +237,9 @@ llm_classifier:
 - `primary` accepts a string, `{model, provider}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
 - `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
 - When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
+- `smart_proxy.fallback_backoff` enables process-local exponential cooldowns for retryable non-streaming `429` / `5xx` failures, keyed by `model+provider`
+- Cooled-down `model+provider` pairs are skipped during both primary selection and fallback execution; the same model on a different provider remains eligible
+- Successful recovery resets the failure streak for that exact `model+provider` pair, and restarting kani clears the in-memory cooldown registry
 - Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
 - Set `KANI_ADMIN_TOKEN` to enable `POST /admin/reload-config` (admin-only, separate from regular API keys)
 - Hot reload validates with `strict=True` and rejects non-reloadable field changes (`host`, `port`) with `409`

@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from kani.config import KaniConfig, ProfileConfig, ProviderConfig, TierModelConfig
+from kani.fallback_backoff import FallbackBackoffState
 from kani.router import Router
 
 
@@ -126,3 +127,121 @@ class TestRouterLogging:
             "model-a",
         ]
         assert [eco_1.model, eco_2.model] == ["eco-a", "eco-b"]
+
+    def test_round_robin_skips_cooled_primary_candidates(self) -> None:
+        config = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                ),
+                "alt": ProviderConfig(
+                    name="alt",
+                    base_url="https://alt.example/v1",
+                    api_key="alt-key",
+                ),
+            },
+            default_provider="openrouter",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(
+                            primary=["model-a", "model-b"],
+                            fallback=[],
+                        ),
+                        "MEDIUM": TierModelConfig(primary="model-medium", fallback=[]),
+                    }
+                )
+            },
+            default_profile="auto",
+            smart_proxy={
+                "fallback_backoff": {
+                    "enabled": True,
+                    "initial_delay_seconds": 5,
+                    "multiplier": 2,
+                    "max_delay_seconds": 60,
+                }
+            },
+        )
+        backoff_state = FallbackBackoffState(config.smart_proxy.fallback_backoff)
+        backoff_state.record_retryable_failure("model-a", "openrouter")
+        router = Router(config, fallback_backoff_state=backoff_state)
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "SIMPLE",
+                "score": 0.1,
+                "confidence": 0.9,
+                "signals": ["method"],
+                "signal_details": {"method": {"raw": "embedding"}},
+                "agentic_score": 0.0,
+            },
+        ):
+            first = router.route([{"role": "user", "content": "hi"}], profile="auto")
+            second = router.route([{"role": "user", "content": "hi"}], profile="auto")
+
+        assert first.model == "model-b"
+        assert second.model == "model-b"
+
+    def test_cooldown_isolated_per_provider(self) -> None:
+        config = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                ),
+                "alt": ProviderConfig(
+                    name="alt",
+                    base_url="https://alt.example/v1",
+                    api_key="alt-key",
+                ),
+            },
+            default_provider="openrouter",
+            profiles={
+                "auto": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(
+                            primary=[
+                                {"model": "model-a", "provider": "openrouter"},
+                                {"model": "model-a", "provider": "alt"},
+                            ],
+                            fallback=[],
+                        ),
+                        "MEDIUM": TierModelConfig(primary="model-medium", fallback=[]),
+                    }
+                )
+            },
+            default_profile="auto",
+            smart_proxy={
+                "fallback_backoff": {
+                    "enabled": True,
+                    "initial_delay_seconds": 5,
+                    "multiplier": 2,
+                    "max_delay_seconds": 60,
+                }
+            },
+        )
+        backoff_state = FallbackBackoffState(config.smart_proxy.fallback_backoff)
+        backoff_state.record_retryable_failure("model-a", "openrouter")
+        router = Router(config, fallback_backoff_state=backoff_state)
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "SIMPLE",
+                "score": 0.1,
+                "confidence": 0.9,
+                "signals": ["method"],
+                "signal_details": {"method": {"raw": "embedding"}},
+                "agentic_score": 0.0,
+            },
+        ):
+            decision = router.route([{"role": "user", "content": "hi"}], profile="auto")
+
+        assert decision.model == "model-a"
+        assert decision.provider == "alt"

@@ -54,6 +54,7 @@ from kani.dashboard import (
     recommended_dashboard_ingest_days,
     render_dashboard_html,
 )
+from kani.fallback_backoff import FallbackBackoffState
 from kani.router import (
     CapabilityNotSatisfiedError,
     FallbackEntry,
@@ -79,6 +80,7 @@ class RuntimeState:
     config_path: str | None
     config: KaniConfig
     router: Router
+    fallback_backoff_state: FallbackBackoffState
     config_loaded_at: str
     version: int
 
@@ -109,7 +111,11 @@ def _build_runtime_state(
     """Load config and build an immutable runtime state snapshot."""
     path = _resolve_config_path(config_path)
     cfg = load_config(path, strict=strict)
-    router = Router(cfg)
+    fallback_backoff_state = FallbackBackoffState(cfg.smart_proxy.fallback_backoff)
+    if _state is not None:
+        fallback_backoff_state = _state.fallback_backoff_state
+        fallback_backoff_state.update_config(cfg.smart_proxy.fallback_backoff)
+    router = Router(cfg, fallback_backoff_state=fallback_backoff_state)
 
     next_version = 1
     if _state is not None:
@@ -119,6 +125,7 @@ def _build_runtime_state(
         config_path=path,
         config=cfg,
         router=router,
+        fallback_backoff_state=fallback_backoff_state,
         config_loaded_at=_now_utc_iso(),
         version=next_version,
     )
@@ -140,6 +147,7 @@ def _runtime_state_from_legacy_globals() -> RuntimeState | None:
         config_path=_resolve_config_path(),
         config=_config,
         router=_router,
+        fallback_backoff_state=_router.fallback_backoff_state,
         config_loaded_at=_now_utc_iso(),
         version=0,
     )
@@ -573,6 +581,60 @@ def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
     return False
 
 
+def _record_successful_candidate(
+    state: RuntimeState,
+    *,
+    model: str,
+    provider: str,
+) -> None:
+    """Reset retryable failure streak after a successful request."""
+    try:
+        state.fallback_backoff_state.record_success(model, provider)
+    except Exception:
+        logger.exception(
+            "Failed to reset fallback cooldown model=%s provider=%s",
+            model,
+            provider,
+        )
+
+
+def _record_retryable_failure(
+    state: RuntimeState,
+    *,
+    model: str,
+    provider: str,
+    status_code: int,
+) -> None:
+    """Record retryable failure for future cooldown filtering."""
+    try:
+        state.fallback_backoff_state.record_retryable_failure(model, provider)
+    except Exception:
+        logger.exception(
+            "Failed to apply fallback cooldown model=%s provider=%s status=%d",
+            model,
+            provider,
+            status_code,
+        )
+
+
+def _is_candidate_in_cooldown(
+    state: RuntimeState,
+    *,
+    model: str,
+    provider: str,
+) -> bool:
+    """Return True when the candidate should be skipped due to cooldown."""
+    try:
+        return state.fallback_backoff_state.is_in_cooldown(model, provider)
+    except Exception:
+        logger.exception(
+            "Failed to read fallback cooldown model=%s provider=%s",
+            model,
+            provider,
+        )
+        return False
+
+
 def _unique_fallbacks(decision: RoutingDecision) -> list[tuple[int, FallbackEntry]]:
     """Return unique fallback entries excluding the selected primary candidate."""
     primary_key = (decision.model, decision.provider)
@@ -600,8 +662,11 @@ async def _try_with_fallbacks(
     *,
     request_id: str | None = None,
     compaction_result: CompactionResult | None = None,
+    state: RuntimeState | None = None,
 ) -> StreamingResponse | JSONResponse:
     """Try primary, then fallbacks on failure."""
+    runtime = state or _require_runtime_state()
+
     # Try primary
     result = await _proxy_upstream(
         decision.base_url.rstrip("/"),
@@ -615,11 +680,33 @@ async def _try_with_fallbacks(
     )
 
     if not _is_retryable_error(result):
+        _record_successful_candidate(
+            runtime,
+            model=decision.model,
+            provider=decision.provider,
+        )
         return result
+
+    _record_retryable_failure(
+        runtime,
+        model=decision.model,
+        provider=decision.provider,
+        status_code=result.status_code,
+    )
 
     # Try fallbacks (exclude selected primary + deduplicate fallback candidates)
     unique_fallbacks = _unique_fallbacks(decision)
     for i, (original_idx, fb) in enumerate(unique_fallbacks):
+        if _is_candidate_in_cooldown(runtime, model=fb.model, provider=fb.provider):
+            logger.info(
+                "Skipping cooled fallback model=%s provider=%s source_idx=%d request_id=%s",
+                fb.model,
+                fb.provider,
+                original_idx,
+                request_id,
+            )
+            continue
+
         logger.warning(
             "FALLBACK [%d/%d] model=%s provider=%s (primary=%s failed, source_idx=%d)",
             i + 1,
@@ -642,7 +729,19 @@ async def _try_with_fallbacks(
             compaction_result=compaction_result,
         )
         if not _is_retryable_error(result):
+            _record_successful_candidate(
+                runtime,
+                model=fb.model,
+                provider=fb.provider,
+            )
             return result
+
+        _record_retryable_failure(
+            runtime,
+            model=fb.model,
+            provider=fb.provider,
+            status_code=result.status_code,
+        )
 
     # All failed, return last error
     return result
@@ -1112,6 +1211,7 @@ async def chat_completions(request: Request):
             profile_name,
             request_id=request_id,
             compaction_result=compaction_result,
+            state=state,
         )
 
         # Attach compaction headers
