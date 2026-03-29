@@ -21,7 +21,9 @@ def _config_text(
     include_alt_profile: bool = False,
     compaction_enabled: bool = False,
     compaction_concurrency: int = 2,
+    fallback_backoff_enabled: bool = False,
 ) -> str:
+
     alt_profile = ""
     if include_alt_profile:
         alt_profile = """
@@ -33,8 +35,10 @@ def _config_text(
       REASONING: {primary: \"premium-reason\", fallback: [], provider: default}
 """
 
-    smart_proxy = """
-smart_proxy:
+    smart_proxy_sections: list[str] = []
+    if compaction_enabled:
+        smart_proxy_sections.append(
+            """
   context_compaction:
     enabled: true
     sync_compaction:
@@ -43,8 +47,21 @@ smart_proxy:
       enabled: true
       max_concurrency: {compaction_concurrency}
 """.format(compaction_concurrency=compaction_concurrency)
-    if not compaction_enabled:
-        smart_proxy = ""
+        )
+    if fallback_backoff_enabled:
+        smart_proxy_sections.append(
+            """
+  fallback_backoff:
+    enabled: true
+    initial_delay_seconds: 5
+    multiplier: 2
+    max_delay_seconds: 60
+"""
+        )
+
+    smart_proxy = ""
+    if smart_proxy_sections:
+        smart_proxy = "smart_proxy:\n" + "".join(smart_proxy_sections)
 
     return f"""
 host: \"{host}\"
@@ -228,6 +245,40 @@ class TestCompactionWorkerReload:
             assert after_worker is not None
             assert after_worker._semaphore._value != before_limit
 
+    def test_reload_updates_backoff_config_without_resetting_state(
+        self,
+        tmp_path: Path,
+        admin_token,
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(_config_text(fallback_backoff_enabled=True))
+        configure(str(path))
+        state = proxy_mod._require_runtime_state()
+        state.fallback_backoff_state.record_retryable_failure("auto-simple", "dummy")
+        before_entry = state.fallback_backoff_state.get_entry("auto-simple", "dummy")
+        assert before_entry is not None
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            path.write_text(
+                _config_text(fallback_backoff_enabled=True).replace(
+                    "initial_delay_seconds: 5", "initial_delay_seconds: 9"
+                )
+            )
+            resp = client.post(
+                "/admin/reload-config",
+                headers=_admin_headers(admin_token),
+            )
+            assert resp.status_code == 200
+
+        after_state = proxy_mod._require_runtime_state()
+        after_entry = after_state.fallback_backoff_state.get_entry(
+            "auto-simple", "dummy"
+        )
+        assert after_entry == before_entry
+        assert (
+            after_state.config.smart_proxy.fallback_backoff.initial_delay_seconds == 9
+        )
+
     def test_reload_disable_compaction_stops_worker(
         self,
         tmp_path: Path,
@@ -284,6 +335,7 @@ class TestInFlightSnapshotBehavior:
                 config_path=old_state.config_path,
                 config=old_state.config,
                 router=old_router,
+                fallback_backoff_state=old_state.fallback_backoff_state,
                 config_loaded_at=old_state.config_loaded_at,
                 version=old_state.version,
             )
@@ -306,6 +358,7 @@ class TestInFlightSnapshotBehavior:
                         config_path=old_state.config_path,
                         config=old_state.config,
                         router=new_router,
+                        fallback_backoff_state=old_state.fallback_backoff_state,
                         config_loaded_at=old_state.config_loaded_at,
                         version=old_state.version + 1,
                     )

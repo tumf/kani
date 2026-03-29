@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from kani.config import KaniConfig, ProviderConfig, resolve_env
+from kani.fallback_backoff import FallbackBackoffState
 
 log = logging.getLogger(__name__)
 
@@ -74,10 +75,18 @@ _TIER_ORDER = ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"]
 class Router:
     """Given chat messages, decides which model and provider to use."""
 
-    def __init__(self, config: KaniConfig) -> None:
+    def __init__(
+        self,
+        config: KaniConfig,
+        *,
+        fallback_backoff_state: FallbackBackoffState | None = None,
+    ) -> None:
         self.config = config
         self._rr_state: dict[tuple[str, str], int] = {}
         self._rr_lock = Lock()
+        self.fallback_backoff_state = fallback_backoff_state or FallbackBackoffState(
+            config.smart_proxy.fallback_backoff
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -178,12 +187,22 @@ class Router:
         if not capable_candidates and required_capabilities:
             raise CapabilityNotSatisfiedError(required_capabilities)
 
+        selection_candidates = (
+            capable_candidates if required_capabilities else primary_candidates
+        )
+        cooled_primary_candidates = self._filter_cooled_candidates(
+            selection_candidates,
+            tier_provider=tier_cfg.provider,
+        )
+        if cooled_primary_candidates:
+            selection_candidates = cooled_primary_candidates
+
         # --- Resolve primary model and provider ---
         primary_model, primary_provider = self._select_primary_candidate(
             profile,
             resolved_tier,
             tier_cfg,
-            filter_to_candidates=capable_candidates if required_capabilities else None,
+            filter_to_candidates=selection_candidates,
         )
         model_id = primary_model
 
@@ -364,6 +383,32 @@ class Router:
                 capable.append((model_id, provider_name))
 
         return capable
+
+    def _filter_cooled_candidates(
+        self,
+        candidates: list[tuple[str, str]],
+        *,
+        tier_provider: str,
+    ) -> list[tuple[str, str]]:
+        """Filter out model/provider pairs that are currently in cooldown."""
+        if not self.fallback_backoff_state.enabled:
+            return candidates
+
+        available: list[tuple[str, str]] = []
+        for model_id, entry_provider in candidates:
+            resolved_provider = self._resolve_provider_name(
+                entry_provider, tier_provider
+            )
+            if self.fallback_backoff_state.is_in_cooldown(model_id, resolved_provider):
+                logger = log
+                logger.info(
+                    "Skipping cooled candidate during routing model=%s provider=%s",
+                    model_id,
+                    resolved_provider,
+                )
+                continue
+            available.append((model_id, entry_provider))
+        return available
 
     def _resolve_tier_config(self, profile_cfg: Any, tier: str) -> tuple[str, Any]:
         """Resolve a tier config, falling back to adjacent tiers if needed."""

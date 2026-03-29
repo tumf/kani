@@ -209,11 +209,32 @@ class ContextCompactionConfig(BaseModel):
     )
 
 
+class FallbackBackoffConfig(BaseModel):
+    """Configuration for process-local fallback exponential backoff."""
+
+    enabled: bool = False
+    initial_delay_seconds: float = Field(default=5.0, ge=0.0)
+    multiplier: float = Field(default=2.0, ge=1.0)
+    max_delay_seconds: float = Field(default=300.0, ge=0.0)
+
+    @model_validator(mode="after")
+    def _validate_delay_bounds(self) -> "FallbackBackoffConfig":
+        """Ensure the max delay is not lower than the initial delay."""
+        if self.max_delay_seconds < self.initial_delay_seconds:
+            raise ValueError(
+                "max_delay_seconds must be greater than or equal to initial_delay_seconds"
+            )
+        return self
+
+
 class SmartProxyConfig(BaseModel):
     """Smart-proxy feature configuration."""
 
     context_compaction: ContextCompactionConfig = Field(
         default_factory=ContextCompactionConfig
+    )
+    fallback_backoff: FallbackBackoffConfig = Field(
+        default_factory=FallbackBackoffConfig
     )
 
 
