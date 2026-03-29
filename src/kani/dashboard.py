@@ -743,7 +743,15 @@ def _model_usage_rows(
             COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
             COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
             COALESCE(SUM(total_tokens), 0) AS total_tokens,
-            ROUND(AVG(elapsed_ms), 1) AS avg_elapsed_ms
+            ROUND(AVG(elapsed_ms), 1) AS avg_elapsed_ms,
+            ROUND(
+                AVG(
+                    CASE
+                        WHEN elapsed_ms > 0 THEN total_tokens / (elapsed_ms / 1000.0)
+                    END
+                ),
+                1
+            ) AS avg_tps
         FROM execution_logs
         WHERE timestamp > ?
           AND model IS NOT NULL
@@ -1105,10 +1113,20 @@ def _render_model_usage_table(rows: list[dict[str, Any]]) -> str:
                 escape(_fmt_int(row.get("completion_tokens"))),
                 escape(_fmt_int(row.get("total_tokens"))),
                 escape(f"{_fmt_float(row.get('avg_elapsed_ms'))} ms"),
+                escape(_fmt_float(row.get("avg_tps"))),
             ]
         )
     return _render_simple_table(
-        ["Model", "Provider", "Requests", "Input", "Output", "Total", "Avg latency"],
+        [
+            "Model",
+            "Provider",
+            "Requests",
+            "Input",
+            "Output",
+            "Total",
+            "Avg latency",
+            "AVG TPS",
+        ],
         table_rows,
     )
 

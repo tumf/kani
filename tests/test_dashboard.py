@@ -167,6 +167,83 @@ def test_get_dashboard_stats_filters_multiple_profiles(seeded_dashboard):
         "eco-medium",
         "auto-simple",
     ]
+    assert stats["model_usage"]["24h"][0]["avg_tps"] == 1000.0
+    assert stats["model_usage"]["24h"][1]["avg_tps"] == 800.0
+
+
+def test_model_usage_rows_average_tps_ignores_non_positive_elapsed(
+    configured_dashboard,
+):
+    now = datetime.now(timezone.utc)
+    rows = [
+        {
+            "timestamp": (now - timedelta(minutes=2)).isoformat(),
+            "request_id": "req-1",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 80,
+            "completion_tokens": 20,
+            "total_tokens": 100,
+            "elapsed_ms": 100.0,
+        },
+        {
+            "timestamp": (now - timedelta(minutes=1)).isoformat(),
+            "request_id": "req-2",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 160,
+            "completion_tokens": 40,
+            "total_tokens": 200,
+            "elapsed_ms": 400.0,
+        },
+        {
+            "timestamp": now.isoformat(),
+            "request_id": "req-3",
+            "tier": "SIMPLE",
+            "score": 0.2,
+            "confidence": 0.9,
+            "agentic_score": 0.1,
+            "model": "m1",
+            "provider": "p1",
+            "profile": "auto",
+            "prompt_tokens": 40,
+            "completion_tokens": 10,
+            "total_tokens": 50,
+            "elapsed_ms": 0.0,
+        },
+    ]
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        for row in rows:
+            dashboard._insert_execution_record(conn, row)
+        conn.commit()
+
+    with sqlite3.connect(configured_dashboard) as conn:
+        conn.row_factory = sqlite3.Row
+        usage_rows = dashboard._model_usage_rows(conn, 24)
+
+    assert usage_rows == [
+        {
+            "model": "m1",
+            "provider": "p1",
+            "count": 3,
+            "prompt_tokens": 280,
+            "completion_tokens": 70,
+            "total_tokens": 350,
+            "avg_elapsed_ms": 166.7,
+            "avg_tps": 750.0,
+        }
+    ]
 
 
 def test_render_dashboard_html_shows_profile_filter_controls():
@@ -538,3 +615,34 @@ def test_render_daily_table_shows_compaction_columns():
     assert "Compacted" in html
     assert "Saved tokens" in html
     assert "250" in html
+
+
+def test_render_model_usage_table_shows_avg_tps_column():
+    rows = [
+        {
+            "model": "m1",
+            "provider": "p1",
+            "count": 2,
+            "prompt_tokens": 280,
+            "completion_tokens": 70,
+            "total_tokens": 350,
+            "avg_elapsed_ms": 250.0,
+            "avg_tps": 750.0,
+        },
+        {
+            "model": "m2",
+            "provider": "p2",
+            "count": 1,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+            "avg_elapsed_ms": None,
+            "avg_tps": None,
+        },
+    ]
+
+    html = dashboard._render_model_usage_table(rows)
+
+    assert "AVG TPS" in html
+    assert ">750.0<" in html
+    assert ">-<" in html
