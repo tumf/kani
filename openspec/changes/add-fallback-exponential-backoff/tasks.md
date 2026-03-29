@@ -15,4 +15,4 @@
 
 ## Acceptance #1 Failure Follow-up
 
-- [ ] Commit or revert the current implementation changes so `git status --porcelain` is empty before rerunning acceptance.
+- [x] Commit or revert the current implementation changes so `git status --porcelain` is empty before rerunning acceptance. (verification: `git status --short` was empty before this bookkeeping update)
