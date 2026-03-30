@@ -217,8 +217,10 @@ class Router:
                 len(selection_candidates),
             )
         elif selection_candidates:
-            raise ValueError(
-                f"No routable primary candidates remain after cooldown filtering for profile={profile} tier={resolved_tier}"
+            log.warning(
+                "All candidates (primary + fallback) cooling down; ignoring cooldown profile=%s tier=%s",
+                profile,
+                resolved_tier,
             )
 
         # --- Resolve primary model and provider ---
