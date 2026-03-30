@@ -4,12 +4,20 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi.responses import JSONResponse
+from starlette.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from kani.api_keys import generate_key, has_keys
-from kani.proxy import _require_runtime_state, _try_with_fallbacks, app, configure
+from kani.proxy import (
+    _proxy_upstream,
+    _require_runtime_state,
+    _try_with_fallbacks,
+    app,
+    configure,
+)
 from kani.router import FallbackEntry, RoutingDecision
 
 
@@ -407,3 +415,132 @@ class TestProxyFallbackBehavior:
         ids = {item["id"] for item in resp.json()["data"]}
         assert "test-model-a" in ids
         assert "test-model-b" in ids
+
+
+class TestSuccessfulFailureHandling:
+    @pytest.mark.asyncio
+    async def test_nonstream_overloaded_payload_becomes_retryable_error(self):
+        response = httpx.Response(
+            200,
+            json={
+                "type": "error",
+                "error": {"type": "overloaded_error", "message": "Overloaded"},
+            },
+        )
+
+        async with httpx.AsyncClient() as client:
+            with (
+                patch("kani.proxy._http", client),
+                patch.object(client, "post", return_value=response),
+            ):
+                result = await _proxy_upstream(
+                    "https://primary.example/v1",
+                    "primary-key",
+                    {
+                        "model": "model-primary",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                    None,
+                )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 529
+        assert b"Overloaded" in result.body
+
+    @pytest.mark.asyncio
+    async def test_streaming_overloaded_first_chunk_becomes_retryable_error(self):
+        class FakeStreamingResponse:
+            status_code = 200
+
+            def __init__(self, lines: list[str]):
+                self._lines = lines
+
+            async def aiter_lines(self):
+                for line in self._lines:
+                    yield line
+
+            async def aread(self):
+                return "\n".join(self._lines).encode()
+
+            async def aclose(self):
+                return None
+
+        response = FakeStreamingResponse(
+            [
+                'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+                "",
+            ]
+        )
+
+        async def fake_send(*args, **kwargs):
+            _ = args, kwargs
+            return response
+
+        async with httpx.AsyncClient() as client:
+            with (
+                patch("kani.proxy._http", client),
+                patch.object(client, "send", side_effect=fake_send),
+            ):
+                result = await _proxy_upstream(
+                    "https://primary.example/v1",
+                    "primary-key",
+                    {
+                        "model": "model-primary",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                    None,
+                )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 529
+        assert b"Overloaded" in result.body
+
+    @pytest.mark.asyncio
+    async def test_streaming_normal_payload_stays_streaming(self):
+        class FakeStreamingResponse:
+            status_code = 200
+
+            def __init__(self, lines: list[str]):
+                self._lines = lines
+                self._aiter_lines_called = 0
+
+            async def aiter_lines(self):
+                self._aiter_lines_called += 1
+                if self._aiter_lines_called > 1:
+                    raise RuntimeError("aiter_lines called more than once")
+                for line in self._lines:
+                    yield line
+
+            async def aread(self):
+                return "\n".join(self._lines).encode()
+
+            async def aclose(self):
+                return None
+
+        response = FakeStreamingResponse(
+            ['data: {"choices":[{"delta":{"content":"ok"}}]}', "", "data: [DONE]", ""]
+        )
+
+        async def fake_send(*args, **kwargs):
+            _ = args, kwargs
+            return response
+
+        async with httpx.AsyncClient() as client:
+            with (
+                patch("kani.proxy._http", client),
+                patch.object(client, "send", side_effect=fake_send),
+            ):
+                result = await _proxy_upstream(
+                    "https://primary.example/v1",
+                    "primary-key",
+                    {
+                        "model": "model-primary",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                    None,
+                )
+
+        assert isinstance(result, StreamingResponse)
+        assert response._aiter_lines_called == 1

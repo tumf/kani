@@ -503,9 +503,50 @@ async def _proxy_upstream(
                     "upstream_error",
                 )
 
+            line_iter = upstream.aiter_lines()
+            buffered_lines: list[str] = []
+            async for line in line_iter:
+                buffered_lines.append(line)
+                if not line.startswith("data: ") or line == "data: [DONE]":
+                    continue
+                try:
+                    first_chunk = json.loads(line[6:])
+                except (json.JSONDecodeError, TypeError):
+                    break
+                successful_failure = _parse_successful_failure(first_chunk)
+                if successful_failure is not None:
+                    await upstream.aclose()
+                    status_code, message, error_type = successful_failure
+                    return _openai_error(
+                        status_code,
+                        f"Upstream error: {message}",
+                        error_type,
+                    )
+                break
+
             async def _stream():
                 try:
-                    async for line in upstream.aiter_lines():
+                    for line in buffered_lines:
+                        yield f"{line}\n"
+                        if line.startswith("data: ") and line != "data: [DONE]":
+                            try:
+                                chunk = json.loads(line[6:])
+                                usage = chunk.get("usage")
+                                if usage:
+                                    elapsed = (time.monotonic() - t0) * 1000
+                                    _log_usage(
+                                        model_name,
+                                        actual_provider,
+                                        usage,
+                                        profile,
+                                        elapsed,
+                                        decision=decision,
+                                        request_id=request_id,
+                                        compaction_result=compaction_result,
+                                    )
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                    async for line in line_iter:
                         yield f"{line}\n"
                         # Parse usage from the final data chunk
                         if line.startswith("data: ") and line != "data: [DONE]":
@@ -548,6 +589,14 @@ async def _proxy_upstream(
                     "upstream_error",
                 )
             resp_data = resp.json()
+            successful_failure = _parse_successful_failure(resp_data)
+            if successful_failure is not None:
+                status_code, message, error_type = successful_failure
+                return _openai_error(
+                    status_code,
+                    f"Upstream error: {message}",
+                    error_type,
+                )
             _log_usage(
                 model_name,
                 actual_provider,
@@ -579,6 +628,24 @@ def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
     if isinstance(result, JSONResponse):
         return result.status_code == 429 or result.status_code >= 500
     return False
+
+
+def _parse_successful_failure(payload: Any) -> tuple[int, str, str] | None:
+    """Detect upstream errors encoded inside an HTTP 200 payload."""
+    if not isinstance(payload, dict):
+        return None
+
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None
+
+    error_type = str(error.get("type") or payload.get("type") or "")
+    message = str(error.get("message") or payload.get("message") or "")
+
+    if error_type.lower() == "overloaded_error" or message.lower() == "overloaded":
+        return 529, message or "Overloaded", "overloaded_error"
+
+    return None
 
 
 def _record_successful_candidate(
