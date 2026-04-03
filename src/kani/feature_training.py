@@ -181,7 +181,7 @@ def train_feature_classifier(
             y[:, idx],
             y_pred[:, idx],
             target_names=target_names,
-            zero_division="0",
+            zero_division=cast(Any, 0.0),
         )
         print(f"[{dim}]\n{report}")
 
