@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Train the embedding-based AGENTIC/NON_AGENTIC classifier for kani."""
+"""Deprecated wrapper: train distilled feature classifier instead."""
 
-from kani.agentic_training import main
+from kani.feature_training import main
 
 
 if __name__ == "__main__":

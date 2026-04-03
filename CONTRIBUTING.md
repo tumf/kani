@@ -4,54 +4,81 @@
 
 ```
 src/kani/
-├── scorer.py    # model-first scoring (embedding + LLM fallback)
-├── router.py    # Tier → model+provider mapping
-├── proxy.py     # FastAPI OpenAI-compatible server
-├── config.py    # YAML config loading, env var resolution
-├── logger.py    # JSONL routing log
-└── cli.py       # Click CLI
+├── scorer.py           # distilled feature scoring (runtime)
+├── feature_training.py # multi-output feature model training
+├── training_data.py    # distilled feature dataset generation
+├── router.py           # Tier → model+provider mapping
+├── proxy.py            # FastAPI OpenAI-compatible server
+├── config.py           # YAML config loading, env var resolution
+├── logger.py           # JSONL routing log
+└── cli.py              # Click CLI
 ```
 
 ## Classification pipeline
 
-3-layer cascade:
+Unified distilled-feature pipeline:
 
-1. **Embedding classifier** — pre-trained sklearn model for tier routing (primary path)
-2. **LLM-as-judge** — cheap fallback for uncertain or unavailable tier decisions
-3. **Agentic embedding classifier** — for the `agentic` profile, SIMPLE prompts get a learned AGENTIC / NON_AGENTIC pass when `models/agentic_classifier.pkl` exists
-4. **Agentic LLM fallback** — only used when the learned agentic classifier is uncertain or unavailable
-5. **Conservative default** — fall back to `MEDIUM` when neither classifier can decide
+1. **Token count** — deterministic `tokenCount` extraction
+2. **Semantic classifier** — learned multi-output classifier predicts 14 semantic dimensions (`low` / `medium` / `high`)
+3. **Weighted synthesis** — all 15 dimensions are aggregated into one routing score
+4. **Tier mapping** — score maps to `SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`
+5. **Unified agentic score** — `agenticTask` dimension maps directly to `agentic_score`
+6. **Conservative default** — fallback to `MEDIUM` only when the feature model is unavailable
 
-The scorer intentionally avoids hand-maintained keyword tables. If routing quality is off, prefer improving training data, retraining the embedding model, or tightening the LLM classifier prompt instead of adding heuristics.
-
-## LLM escalation
-
-When the learned tier classifier isn't confident enough, kani asks a cheap LLM:
-
-| Env var | Default | Description |
-|---------|---------|-------------|
-| `KANI_LLM_CLASSIFIER_MODEL` | `google/gemini-2.5-flash-lite` | Classifier model |
-| `KANI_LLM_CLASSIFIER_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
-| `KANI_LLM_CLASSIFIER_API_KEY` | `$OPENROUTER_API_KEY` | API key |
-
-Cost: ~$0.0001 per escalation. Timeout: 2s.
+Runtime scorer intentionally avoids runtime LLM fallback and separate agentic classifier paths.
 
 ## Routing logs
 
 All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl`:
 
 ```json
-{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.8, "confidence": 0.8, "method": "llm", "agentic_score": 0.0}
+{
+  "timestamp": "2026-03-21T19:50:00+00:00",
+  "prompt_preview": "prove the Riemann...",
+  "tier": "REASONING",
+  "score": 0.82,
+  "confidence": 0.87,
+  "method": "distilled-features",
+  "agentic_score": 1.0,
+  "signals": {
+    "tokenCount": 38,
+    "semanticLabels": {
+      "reasoningMarkers": "high",
+      "agenticTask": "high"
+    },
+    "featureVersion": "v1"
+  }
+}
 ```
 
-Use `uv run python scripts/build_agentic_dataset.py --output data/agentic_training_prompts.json` to extract binary AGENTIC / NON_AGENTIC examples from routing logs when explicit `agenticLabel` evidence is already present.
-The extractor only keeps records with explicit agentic evidence, prefers full `prompt` when present, and deduplicates by prompt.
+## Distilled feature dataset generation
 
-If the logs are still sparse, use `uv run python scripts/bootstrap_agentic_dataset.py --output data/agentic_training_prompts.json` to bootstrap labels from four sources: explicit routing-log labels, built-in seed examples, optional overrides/exclude files, and cheap-LLM classifications for the remaining prompts.
+Build training data from routing logs:
 
-Use `uv run python scripts/train_agentic_classifier.py --data data/agentic_training_prompts.json --output models` to train an embedding-based binary agentic classifier and save `models/agentic_classifier.pkl`.
+```bash
+uv run python scripts/build_agentic_dataset.py --output data/distilled_feature_dataset.json
+```
 
-At runtime, kani loads `models/agentic_classifier.pkl` automatically for the `agentic` profile. High-confidence learned predictions are used directly; low-confidence cases fall back to the cheap LLM judge.
+If logs are missing semantic labels, add `--annotate-missing` to run offline LLM annotation.
+LLM annotation is for dataset generation only (not runtime routing).
+
+## Feature model training
+
+Train the multi-output classifier bundle:
+
+```bash
+uv run python scripts/train_classifier.py \
+  --data data/distilled_feature_dataset.json \
+  --output models
+```
+
+This writes `models/feature_classifier.pkl` with:
+
+- sklearn multi-output classifier
+- per-dimension label encoders
+- embedding metadata
+- default feature weights and tier thresholds
+- feature schema version
 
 ## Response headers
 
@@ -60,13 +87,13 @@ Routed responses include extra headers for debugging:
 - `X-Kani-Tier` — classified tier (SIMPLE / MEDIUM / COMPLEX / REASONING)
 - `X-Kani-Model` — actual model selected
 - `X-Kani-Score` — raw weighted score
-- `X-Kani-Signals` — triggered dimensions
+- `X-Kani-Signals` — signal payload summary
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest tests/ -q    # 42 tests
+uv run pytest tests/ -q
 uv run ruff check src/
 uv run pyright src/
 ```

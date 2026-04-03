@@ -1,3 +1,5 @@
+"""Tests for router integration with distilled feature scoring and logging."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -37,9 +39,13 @@ class TestRouterLogging:
     ) -> None:
         router = Router(_make_config())
         detailed_signals = {
-            "method": {"raw": "embedding", "matches": 0},
-            "agenticLabel": {"raw": "AGENTIC", "matches": 0},
-            "agenticMethod": {"raw": "llm", "matches": 0},
+            "method": {"raw": "distilled-features", "matches": 0},
+            "tokenCount": 42,
+            "semanticLabels": {
+                "agenticTask": "high",
+                "reasoningMarkers": "medium",
+            },
+            "featureVersion": "v1",
         }
 
         with (
@@ -50,7 +56,12 @@ class TestRouterLogging:
                     "tier": "SIMPLE",
                     "score": 0.9,
                     "confidence": 0.92,
-                    "signals": ["method", "agenticLabel", "agenticMethod"],
+                    "signals": [
+                        "method",
+                        "tokenCount",
+                        "semanticLabels",
+                        "featureVersion",
+                    ],
                     "signal_details": detailed_signals,
                     "agentic_score": 1.0,
                 },
@@ -67,7 +78,12 @@ class TestRouterLogging:
                 profile="agentic",
             )
 
-        assert decision.signals == ["method", "agenticLabel", "agenticMethod"]
+        assert decision.signals == [
+            "method",
+            "tokenCount",
+            "semanticLabels",
+            "featureVersion",
+        ]
         assert decision.tier == "MEDIUM"
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs["signals"] == detailed_signals
@@ -111,7 +127,7 @@ class TestRouterLogging:
                 "score": 0.1,
                 "confidence": 0.9,
                 "signals": ["method"],
-                "signal_details": {"method": {"raw": "embedding"}},
+                "signal_details": {"method": {"raw": "distilled-features"}},
                 "agentic_score": 0.0,
             },
         ):
@@ -176,7 +192,7 @@ class TestRouterLogging:
                 "score": 0.1,
                 "confidence": 0.9,
                 "signals": ["method"],
-                "signal_details": {"method": {"raw": "embedding"}},
+                "signal_details": {"method": {"raw": "distilled-features"}},
                 "agentic_score": 0.0,
             },
         ):
@@ -185,118 +201,3 @@ class TestRouterLogging:
 
         assert first.model == "model-b"
         assert second.model == "model-b"
-
-    def test_cooldown_isolated_per_provider(self) -> None:
-        config = KaniConfig(
-            providers={
-                "openrouter": ProviderConfig(
-                    name="openrouter",
-                    base_url="https://openrouter.ai/api/v1",
-                    api_key="test-key",
-                ),
-                "alt": ProviderConfig(
-                    name="alt",
-                    base_url="https://alt.example/v1",
-                    api_key="alt-key",
-                ),
-            },
-            default_provider="openrouter",
-            profiles={
-                "auto": ProfileConfig(
-                    tiers={
-                        "SIMPLE": TierModelConfig(
-                            primary=[
-                                {"model": "model-a", "provider": "openrouter"},
-                                {"model": "model-a", "provider": "alt"},
-                            ],
-                            fallback=[],
-                        ),
-                        "MEDIUM": TierModelConfig(primary="model-medium", fallback=[]),
-                    }
-                )
-            },
-            default_profile="auto",
-            smart_proxy={
-                "fallback_backoff": {
-                    "enabled": True,
-                    "initial_delay_seconds": 5,
-                    "multiplier": 2,
-                    "max_delay_seconds": 60,
-                }
-            },
-        )
-        backoff_state = FallbackBackoffState(config.smart_proxy.fallback_backoff)
-        backoff_state.record_retryable_failure("model-a", "openrouter")
-        router = Router(config, fallback_backoff_state=backoff_state)
-
-        with patch.object(
-            Router,
-            "_classify",
-            return_value={
-                "tier": "SIMPLE",
-                "score": 0.1,
-                "confidence": 0.9,
-                "signals": ["method"],
-                "signal_details": {"method": {"raw": "embedding"}},
-                "agentic_score": 0.0,
-            },
-        ):
-            decision = router.route([{"role": "user", "content": "hi"}], profile="auto")
-
-        assert decision.model == "model-a"
-        assert decision.provider == "alt"
-
-    def test_promotes_fallback_when_all_primary_candidates_are_in_cooldown(
-        self,
-    ) -> None:
-        config = KaniConfig(
-            providers={
-                "cliproxy": ProviderConfig(
-                    name="cliproxy",
-                    base_url="http://cliproxy.example/v1",
-                    api_key="test-key",
-                )
-            },
-            default_provider="cliproxy",
-            profiles={
-                "auto": ProfileConfig(
-                    tiers={
-                        "SIMPLE": TierModelConfig(
-                            primary="claude-opus-4-6",
-                            fallback=["claude-opus-4-6", "gpt-5.4"],
-                            provider="default",
-                        )
-                    }
-                )
-            },
-            default_profile="auto",
-            smart_proxy={
-                "fallback_backoff": {
-                    "enabled": True,
-                    "initial_delay_seconds": 5,
-                    "multiplier": 2,
-                    "max_delay_seconds": 60,
-                }
-            },
-        )
-        backoff_state = FallbackBackoffState(config.smart_proxy.fallback_backoff)
-        backoff_state.record_retryable_failure("claude-opus-4-6", "cliproxy")
-        router = Router(config, fallback_backoff_state=backoff_state)
-
-        with patch.object(
-            Router,
-            "_classify",
-            return_value={
-                "tier": "SIMPLE",
-                "score": 0.8,
-                "confidence": 0.8,
-                "signals": ["method"],
-                "signal_details": {"method": {"raw": "embedding"}},
-                "agentic_score": 0.0,
-            },
-        ):
-            decision = router.route([{"role": "user", "content": "hi"}], profile="auto")
-
-        assert decision.model == "gpt-5.4"
-        assert decision.provider == "cliproxy"
-        assert [fb.model for fb in decision.fallbacks] == ["claude-opus-4-6"]

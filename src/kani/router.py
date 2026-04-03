@@ -589,42 +589,17 @@ class Router:
         _ = system_prompt, messages
 
         try:
-            from kani.scorer import AgenticClassifier, LLMClassifier, Scorer
+            from kani.scorer import Scorer
 
-            llm_clf = None
-            agentic_clf = None
-            if self.config.llm_classifier:
-                llm_clf = LLMClassifier(
-                    model=self.config.llm_classifier.model,
-                    base_url=self.config.llm_classifier.base_url,
-                    api_key=self.config.llm_classifier.api_key,
-                )
-                if profile == "agentic":
-                    agentic_clf = AgenticClassifier(
-                        model=self.config.llm_classifier.model,
-                        base_url=self.config.llm_classifier.base_url,
-                        api_key=self.config.llm_classifier.api_key,
-                    )
-            elif profile == "agentic":
-                agentic_clf = AgenticClassifier()
-
-            scorer = Scorer(
-                llm_classifier=llm_clf,
-                agentic_classifier=agentic_clf,
-                enable_routing_log=False,
-            )
-            result = scorer.classify(prompt, classify_agentic=(profile == "agentic"))
+            scorer = Scorer(enable_routing_log=False)
+            result = scorer.classify(prompt)
             tier_val = result.tier
             if hasattr(tier_val, "value"):
                 tier_val = tier_val.value
             signal_details = result.signals
             signals = signal_details
             if isinstance(signal_details, dict):
-                signals = [
-                    k
-                    for k, v in signal_details.items()
-                    if v and isinstance(v, dict) and v.get("raw", 0) != 0
-                ]
+                signals = list(signal_details.keys())
             return {
                 "score": result.score,
                 "tier": str(tier_val) if tier_val else None,
