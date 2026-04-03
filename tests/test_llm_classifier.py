@@ -98,5 +98,6 @@ class TestRoutingLogger:
             assert entry["model"] == "model-medium"
             assert entry["provider"] == "openrouter"
             assert entry["profile"] == "agentic"
+            assert entry["classification_context"] == {}
 
             RoutingLogger.set_log_dir(Path.home() / ".kani" / "logs")

@@ -257,6 +257,7 @@ class Scorer:
         return dimensions, score, agentic_score
 
     def classify(self, text: str) -> ClassificationResult:
+        log.debug("Scoring classification input text_length=%d", len(text))
         feature_clf = self._load_feature_model()
         if feature_clf is None:
             result = ClassificationResult(
