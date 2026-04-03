@@ -14,32 +14,33 @@ OpenAI API-compatible proxy — drop in as a base URL and let kani pick the righ
 ## How it works
 
 ```
-Request → Embedding Classifier → Tier → Capability Filter → Model Selection (round-robin) → Upstream Provider
-                 │                              │
-                 │                              └─ no capable model → escalate tier
-                 └─ uncertain / unavailable → LLM Classifier → conservative default
+Request → Distilled Feature Classifier (15 dimensions) → Tier + Agentic Score → Capability Filter → Model Selection (round-robin) → Upstream Provider
+                                                     │
+                                                     └─ model unavailable → conservative default
 ```
 
 **Classification pipeline:**
 
-1. **Embedding classifier** — pre-trained sklearn model (primary path)
-2. **LLM-as-judge** — cheap fallback for uncertain or unavailable embedding decisions
-3. **Agentic classifier** — for the `agentic` profile, SIMPLE prompts can be re-labeled as action-oriented before routing
-4. **Conservative default** — fall back to `MEDIUM` when neither classifier can decide
+1. **Distilled feature classifier** — deterministic `tokenCount` + learned 14 semantic dimensions
+2. **Weighted synthesis** — one unified score drives tier selection (`SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`)
+3. **Unified agentic score** — `agenticTask` dimension is mapped directly to `agentic_score`
+4. **Conservative default** — fall back to `MEDIUM` when the feature model is unavailable
 5. **Capability filter** — auto-detects vision/tools/json_mode from the request and escalates to a capable model
 
 Every request is logged to `$XDG_STATE_HOME/kani/log/` (default: `~/.local/state/kani/log/`) as training data for future model improvement.
 
 ## Scoring approach
 
-kani no longer relies on hand-maintained keyword lists inside `scorer.py`.
-The scorer is now model-first:
+kani no longer relies on hand-maintained keyword lists or runtime LLM fallback for routing.
+The scorer is now distilled-feature-first:
 
-- use the trained embedding classifier when confidence is high enough
-- escalate ambiguous cases to a cheap LLM classifier
-- return a conservative default tier instead of brittle keyword heuristics
+- compute `tokenCount` deterministically
+- infer 14 semantic dimensions (`low` / `medium` / `high`) using a learned multi-output classifier
+- combine all 15 dimensions with explicit weights to determine tier and confidence
+- derive `agentic_score` from the `agenticTask` dimension in the same pipeline
+- return a conservative default tier only when the feature model is unavailable
 
-This makes routing behavior easier to improve with data, because changes come from retraining or prompt tuning rather than editing keyword tables.
+This makes routing behavior easier to improve with data, because changes come from retraining and calibration rather than runtime prompt engineering.
 
 ## Quick start
 
@@ -225,11 +226,6 @@ smart_proxy:
     multiplier: 2
     max_delay_seconds: 300
 
-# LLM classifier for low-confidence escalation (optional)
-llm_classifier:
-  model: "google/gemini-2.5-flash-lite"
-  base_url: "https://openrouter.ai/api/v1"
-  api_key: "${OPENROUTER_API_KEY}"
 ```
 
 - `${VAR}` syntax resolves environment variables
@@ -335,71 +331,50 @@ curl -v -X POST http://localhost:18420/v1/chat/completions \
   2>&1 | grep -i "x-kani-compaction"
 ```
 
-## LLM escalation
+## Offline feature annotation
 
-When the embedding classifier is uncertain or unavailable, kani asks a cheap LLM.
+Runtime routing does not call an LLM. LLM usage is limited to offline dataset generation when logs are missing semantic labels.
 
-**Preferred: configure via `config.yaml`** (see `llm_classifier` section above).
-
-Alternatively, use environment variables (overridden by config.yaml if both are set):
+Optional annotator configuration (for `scripts/build_agentic_dataset.py --annotate-missing`):
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `KANI_LLM_CLASSIFIER_MODEL` | `google/gemini-2.5-flash-lite` | Classifier model |
-| `KANI_LLM_CLASSIFIER_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
-| `KANI_LLM_CLASSIFIER_API_KEY` | `$OPENROUTER_API_KEY` | API key |
-
-Cost: ~$0.0001 per escalation. Timeout: 2s.
+| `KANI_LLM_ANNOTATOR_MODEL` | `google/gemini-2.5-flash-lite` | Annotation model |
+| `KANI_LLM_ANNOTATOR_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
+| `KANI_LLM_ANNOTATOR_API_KEY` | `$OPENROUTER_API_KEY` | API key |
 
 ## Routing logs
 
 All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` (default: `~/.local/state/kani/log/`):
 
 ```json
-{"timestamp": "2025-03-21T19:50:00", "prompt_preview": "prove the Riemann...", "tier": "REASONING", "score": 0.8, "confidence": 0.8, "method": "llm", "agentic_score": 0.0}
+{"timestamp":"2025-03-21T19:50:00","prompt_preview":"prove the Riemann...","tier":"REASONING","score":0.82,"confidence":0.87,"method":"distilled-features","agentic_score":1.0,"signals":{"tokenCount":38,"semanticLabels":{"reasoningMarkers":"high","agenticTask":"high"},"featureVersion":"v1"}}
 ```
 
-Use these logs to expand training data, retrain the embedding classifier, and audit where the LLM fallback is still firing too often.
-
-If your routing logs already contain explicit `agenticLabel` evidence, build a strict dataset directly:
+Use these logs to build distilled feature training data:
 
 ```bash
 uv run python scripts/build_agentic_dataset.py \
-  --output data/agentic_training_prompts.json
+  --output data/distilled_feature_dataset.json
 ```
 
-This extractor only keeps records with explicit agentic evidence, deduplicates by prompt, and writes a clean JSON dataset for future agentic-classifier training.
-Newer logs include the full `prompt` plus a truncated `prompt_preview`, and the extractor prefers the full prompt automatically.
-
-If logs are still sparse and you need an initial bootstrap dataset, use the cheap LLM judge to label unlabeled prompts from the same logs:
+When existing logs do not yet include semantic labels, you can annotate missing examples offline:
 
 ```bash
-uv run python scripts/bootstrap_agentic_dataset.py \
-  --output data/agentic_training_prompts.json
+uv run python scripts/build_agentic_dataset.py \
+  --annotate-missing \
+  --output data/distilled_feature_dataset.json
 ```
 
-The bootstrap flow merges four sources into one training file:
-- explicit labels already present in routing logs
-- built-in seed examples
-- optional manual overrides / exclude lists
-- cheap-LLM labels for remaining prompts
-
-Useful options:
-- `--seed-file seeds.json` — extra `{prompt, label}` examples
-- `--overrides-file overrides.json` — force labels for known prompts
-- `--exclude-file excludes.txt` — skip shorthand/noisy prompts like `.` or `y`
-- `--model`, `--base-url`, `--api-key` — point the bootstrap judge at a specific classifier endpoint
-
-To train an embedding-based agentic classifier from that dataset:
+Then train the multi-output feature classifier bundle:
 
 ```bash
-uv run python scripts/train_agentic_classifier.py \
-  --data data/agentic_training_prompts.json \
+uv run python scripts/train_classifier.py \
+  --data data/distilled_feature_dataset.json \
   --output models
 ```
 
-This writes `models/agentic_classifier.pkl` with the sklearn classifier, label encoder, embedding metadata, and class distribution.
-When that file exists, kani automatically uses it at runtime for the `agentic` profile: high-confidence learned predictions are applied directly, and only low-confidence cases fall back to the cheap LLM judge.
+This writes `models/feature_classifier.pkl` with the sklearn multi-output classifier, per-dimension label encoders, weights, thresholds, and embedding metadata.
 
 ## API key authentication
 
@@ -452,7 +427,7 @@ kani keys remove <name|prefix>
 
 ```
 src/kani/
-├── scorer.py    # model-first scoring (embedding + LLM fallback)
+├── scorer.py    # distilled feature scoring (15-dimensional classifier)
 ├── router.py    # Tier → model+provider mapping
 ├── proxy.py     # FastAPI OpenAI-compatible server
 ├── config.py    # YAML config loading, env var resolution

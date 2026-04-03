@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Bootstrap AGENTIC/NON_AGENTIC training data from kani routing logs."""
+"""Deprecated wrapper: build distilled feature dataset from logs."""
 
-from kani.training_data import bootstrap_main
+from kani.training_data import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(bootstrap_main())
+    raise SystemExit(main())
