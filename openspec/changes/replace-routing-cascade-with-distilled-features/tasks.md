@@ -13,3 +13,8 @@
 
 - Recalibrate feature weights and tier thresholds with production log analysis after enough post-migration data accumulates.
 - Consider optional multilingual calibration if non-English routing quality becomes a product requirement.
+
+## Acceptance #1 Failure Follow-up
+
+- [ ] Fix `src/kani/feature_training.py` to pass a valid non-string `zero_division` value to `sklearn.metrics.classification_report` so the distilled feature training pipeline works on the current sklearn version.
+- [ ] Re-run `uv run pytest tests/ -q` and confirm `tests/test_agentic_training_script.py::test_train_feature_classifier_writes_model_bundle` passes, then update the quality-gate task evidence truthfully.
