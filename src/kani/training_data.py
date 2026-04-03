@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--annotate-missing",
-        is_flag=True,
+        action="store_true",
         help="Use LLM annotation for records missing semantic labels",
     )
     parser.add_argument("--model", help="LLM model for annotation")
