@@ -10,6 +10,7 @@ from typing import Any, Protocol, TypedDict
 
 import httpx
 
+from kani.classification_context import build_classification_input
 from kani.dirs import data_dir, log_dir
 from kani.scorer import SEMANTIC_DIMENSIONS
 
@@ -165,6 +166,23 @@ def _extract_semantic_labels_from_record(
     return {dim: labels[dim] for dim in SEMANTIC_DIMENSIONS}
 
 
+def _classification_prompt_from_record(record: dict[str, Any]) -> str:
+    context = record.get("classification_context")
+    if isinstance(context, dict):
+        context_text = str(context.get("text") or "").strip()
+        if context_text:
+            return context_text
+
+    messages = record.get("messages")
+    if isinstance(messages, list):
+        try:
+            return build_classification_input(messages).text
+        except Exception:
+            pass
+
+    return str(record.get("prompt") or record.get("prompt_preview") or "").strip()
+
+
 def extract_distilled_feature_examples(
     records: list[dict[str, Any]],
     *,
@@ -173,7 +191,7 @@ def extract_distilled_feature_examples(
     latest_by_prompt: dict[str, DistilledFeatureExample] = {}
 
     for record in records:
-        prompt = str(record.get("prompt") or record.get("prompt_preview") or "").strip()
+        prompt = _classification_prompt_from_record(record)
         if not prompt:
             continue
 

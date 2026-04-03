@@ -8,6 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from kani.classification_context import ClassificationInput, build_classification_input
 from kani.config import KaniConfig, ProviderConfig, resolve_env
 from kani.fallback_backoff import FallbackBackoffState
 
@@ -137,12 +138,14 @@ class Router:
                 f"and default profile '{self.config.default_profile}' is also missing."
             )
 
-        # --- Extract prompt info from messages ---
-        prompt, system_prompt = self._extract_prompts(messages)
+        # --- Build classification input from conversation context ---
+        classification_input = build_classification_input(messages)
 
         # --- Run scorer ---
         classification = self._classify(
-            prompt, system_prompt, messages, profile=profile
+            classification_input=classification_input,
+            messages=messages,
+            profile=profile,
         )
 
         tier: str = classification.get("tier") or _DEFAULT_TIER
@@ -262,7 +265,7 @@ class Router:
             from kani.logger import RoutingLogger
 
             RoutingLogger.log_decision(
-                prompt,
+                classification_input.text,
                 tier=tier,
                 score=score,
                 confidence=confidence,
@@ -271,6 +274,7 @@ class Router:
                 model=model_id,
                 provider=provider_name,
                 profile=profile,
+                context=classification_input.__dict__,
             )
         except Exception:
             log.exception("Failed to persist routing decision log")
@@ -539,44 +543,9 @@ class Router:
 
         return self.config.default_profile
 
-    @staticmethod
-    def _extract_prompts(messages: list[dict[str, Any]]) -> tuple[str, str]:
-        """Pull the last user message and system prompt from a message list."""
-        prompt = ""
-        system_prompt = ""
-
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                # Handle multimodal content blocks – extract text parts
-                content = " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            if role == "system":
-                system_prompt = str(content)
-
-        # Last user message
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    content = " ".join(
-                        part.get("text", "")
-                        for part in content
-                        if isinstance(part, dict) and part.get("type") == "text"
-                    )
-                prompt = str(content)
-                break
-
-        return prompt, system_prompt
-
     def _classify(
         self,
-        prompt: str,
-        system_prompt: str,
+        classification_input: ClassificationInput,
         messages: list[dict[str, Any]],
         *,
         profile: str,
@@ -586,13 +555,13 @@ class Router:
         Returns a dict with keys: score, tier, confidence, signals, agentic_score.
         Falls back conservatively if the scorer module isn't available.
         """
-        _ = system_prompt, messages
+        del messages
 
         try:
             from kani.scorer import Scorer
 
             scorer = Scorer(enable_routing_log=False)
-            result = scorer.classify(prompt)
+            result = scorer.classify(classification_input.text)
             tier_val = result.tier
             if hasattr(tier_val, "value"):
                 tier_val = tier_val.value

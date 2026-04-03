@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from kani.training_data import (
+    _classification_prompt_from_record,
     build_feature_dataset,
     deterministic_token_count,
     extract_distilled_feature_examples,
@@ -49,11 +50,21 @@ def test_extract_distilled_feature_examples_prefers_log_labels_and_dedupes() -> 
         {
             "timestamp": "2026-03-23T10:00:00+00:00",
             "prompt": "Open the repo and update config",
+            "classification_context": {
+                "text": "[conversation]\nuser: Open the repo and update config",
+                "selected_turn_count": 1,
+                "selected_user_turn_count": 1,
+            },
             "signals": {"semanticLabels": _labels("high")},
         },
         {
             "timestamp": "2026-03-23T10:05:00+00:00",
             "prompt": "Open the repo and update config",
+            "classification_context": {
+                "text": "[conversation]\nuser: Open the repo and update config",
+                "selected_turn_count": 1,
+                "selected_user_turn_count": 1,
+            },
             "signals": {"semanticLabels": _labels("medium")},
         },
     ]
@@ -61,10 +72,42 @@ def test_extract_distilled_feature_examples_prefers_log_labels_and_dedupes() -> 
     examples = extract_distilled_feature_examples(records)
 
     assert len(examples) == 1
-    assert examples[0]["prompt"] == "Open the repo and update config"
+    assert (
+        examples[0]["prompt"] == "[conversation]\nuser: Open the repo and update config"
+    )
     assert examples[0]["agenticTask"] == "medium"
     assert examples[0]["source"] == "log"
-    assert examples[0]["tokenCount"] == 6
+    assert examples[0]["tokenCount"] == 8
+
+
+def test_classification_prompt_from_record_prefers_context_text() -> None:
+    record = {
+        "prompt": "short",
+        "classification_context": {"text": "[conversation]\nuser: long context"},
+    }
+
+    prompt = _classification_prompt_from_record(record)
+
+    assert prompt == "[conversation]\nuser: long context"
+
+
+def test_classification_prompt_from_record_can_rebuild_from_messages() -> None:
+    record = {
+        "messages": [
+            {"role": "system", "content": "Use concise output"},
+            {
+                "role": "user",
+                "content": "Create migration steps for the database",
+            },
+            {"role": "user", "content": "続けて"},
+        ]
+    }
+
+    prompt = _classification_prompt_from_record(record)
+
+    assert "[system]" in prompt
+    assert "続けて" in prompt
+    assert "Create migration steps for the database" in prompt
 
 
 def test_extract_distilled_feature_examples_can_annotate_missing_labels() -> None:

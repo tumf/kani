@@ -34,6 +34,53 @@ def _make_config() -> KaniConfig:
 
 
 class TestRouterLogging:
+    def test_route_uses_context_aware_classification_input_for_short_followup(
+        self,
+    ) -> None:
+        router = Router(_make_config())
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "MEDIUM",
+                "score": 0.3,
+                "confidence": 0.9,
+                "signals": ["method"],
+                "signal_details": {"method": {"raw": "distilled-features"}},
+                "agentic_score": 0.0,
+            },
+        ) as mock_classify:
+            router.route(
+                [
+                    {
+                        "role": "system",
+                        "content": "Follow repository coding rules",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Refactor router and add tests for edge cases",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "了解しました。次に何をしますか？",
+                    },
+                    {
+                        "role": "user",
+                        "content": "続けて",
+                    },
+                ],
+                profile="agentic",
+            )
+
+        assert mock_classify.call_count == 1
+        classification_input = mock_classify.call_args.kwargs["classification_input"]
+        assert "続けて" in classification_input.text
+        assert (
+            "Refactor router and add tests for edge cases" in classification_input.text
+        )
+        assert classification_input.last_user_is_short_followup is True
+
     def test_route_logs_signal_details_without_changing_public_signal_list(
         self,
     ) -> None:
@@ -87,6 +134,9 @@ class TestRouterLogging:
         assert decision.tier == "MEDIUM"
         mock_log.assert_called_once()
         assert mock_log.call_args.kwargs["signals"] == detailed_signals
+        context = mock_log.call_args.kwargs["context"]
+        assert context["text"]
+        assert "Open the repo and update the config file" in context["text"]
 
     def test_round_robin_primary_selection_per_profile_tier(self) -> None:
         config = KaniConfig(

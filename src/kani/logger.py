@@ -59,6 +59,7 @@ class RoutingLogger:
         model: str | None = None,
         provider: str | None = None,
         profile: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         """Append a routed decision record with resolved model/provider/profile."""
         try:
@@ -91,6 +92,7 @@ class RoutingLogger:
                 "model": model,
                 "provider": provider,
                 "profile": profile,
+                "classification_context": context or {},
             }
 
             line = json.dumps(record, ensure_ascii=False) + "\n"
