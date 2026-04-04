@@ -146,14 +146,19 @@ def test_build_feature_dataset_persists_examples(tmp_path: Path) -> None:
     assert persisted == examples
 
 
-def test_llm_feature_annotator_uses_config_defaults(monkeypatch) -> None:
+def test_llm_feature_annotator_uses_provider_resolved_config_defaults(
+    monkeypatch,
+) -> None:
     class _FeatureAnnotatorConfig:
         model = "gemini-2.5-flash-lite"
-        base_url = "http://127.0.0.1:8317/v1"
-        api_key = "test-key"
+        provider = "local"
 
     class _Config:
         feature_annotator = _FeatureAnnotatorConfig()
+
+        @staticmethod
+        def feature_annotator_resolved() -> tuple[str, str]:
+            return ("http://127.0.0.1:8317/v1", "test-key")
 
     monkeypatch.delenv("KANI_LLM_ANNOTATOR_MODEL", raising=False)
     monkeypatch.delenv("KANI_LLM_ANNOTATOR_BASE_URL", raising=False)

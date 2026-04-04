@@ -62,9 +62,11 @@ class LLMFeatureAnnotator:
         api_key: str | None = None,
     ) -> None:
         cfg = None
+        resolved = None
         try:
             loaded = load_config()
             cfg = loaded.feature_annotator
+            resolved = loaded.feature_annotator_resolved()
         except Exception:
             pass
 
@@ -77,13 +79,13 @@ class LLMFeatureAnnotator:
         self.base_url = (
             base_url
             or os.environ.get("KANI_LLM_ANNOTATOR_BASE_URL")
-            or (cfg.base_url if cfg else None)
+            or (resolved[0] if resolved else None)
             or "https://openrouter.ai/api/v1"
         ).rstrip("/")
         self.api_key = (
             api_key
             or os.environ.get("KANI_LLM_ANNOTATOR_API_KEY")
-            or (cfg.api_key if cfg else None)
+            or (resolved[1] if resolved else None)
             or os.environ.get("OPENROUTER_API_KEY", "")
         )
 

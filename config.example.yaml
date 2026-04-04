@@ -24,8 +24,7 @@ default_profile: auto
 #
 # llm_classifier:
 #     model: "gpt-4o-mini"
-#     base_url: "https://openrouter.ai/api/v1"
-#     api_key: "${OPENROUTER_API_KEY}"
+#     provider: "openrouter"  # optional; defaults to default_provider
 
 # ---------------------------------------------------------------------------
 # Smart-proxy context compaction (optional — all features disabled by default)
