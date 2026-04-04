@@ -11,6 +11,8 @@ from kani.cli import main
 from kani.config import (
     ConfigIncompleteError,
     ConfigNotFoundError,
+    FeatureAnnotatorConfig,
+    LLMClassifierConfig,
     load_config,
 )
 
@@ -107,6 +109,92 @@ profiles:
         )
         cfg = load_config(str(config_path), strict=True)
         assert cfg.profiles["auto"].tiers["SIMPLE"].fallback == []
+
+
+class TestAuxLLMProviderConfig:
+    def test_llm_classifier_rejects_deprecated_connection_fields(self) -> None:
+        with pytest.raises(ValueError):
+            LLMClassifierConfig.model_validate(
+                {
+                    "model": "gpt-4o-mini",
+                    "base_url": "https://openrouter.ai/api/v1",
+                }
+            )
+
+    def test_feature_annotator_rejects_deprecated_connection_fields(self) -> None:
+        with pytest.raises(ValueError):
+            FeatureAnnotatorConfig.model_validate(
+                {
+                    "model": "gpt-4o-mini",
+                    "api_key": "dummy",
+                }
+            )
+
+    def test_aux_llm_provider_resolution_and_default_fallback(
+        self, empty_dir, monkeypatch
+    ) -> None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+  local:
+    name: local
+    base_url: http://127.0.0.1:8317/v1
+    api_key: local-key
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+llm_classifier:
+  model: gpt-4o-mini
+feature_annotator:
+  model: gpt-4o-mini
+  provider: local
+"""
+        )
+
+        cfg = load_config(str(config_path), strict=True)
+
+        llm_base_url, llm_api_key = cfg.llm_classifier_resolved() or ("", "")
+        annotator_base_url, annotator_api_key = cfg.feature_annotator_resolved() or (
+            "",
+            "",
+        )
+
+        assert llm_base_url == "https://openrouter.ai/api/v1"
+        assert llm_api_key == ""
+        assert annotator_base_url == "http://127.0.0.1:8317/v1"
+        assert annotator_api_key == "local-key"
+
+    def test_aux_llm_resolution_fails_for_unknown_provider(self, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+feature_annotator:
+  model: gpt-4o-mini
+  provider: unknown
+"""
+        )
+
+        with pytest.raises(ValueError, match="Unknown provider"):
+            load_config(str(config_path), strict=True)
 
 
 class TestInitCommand:

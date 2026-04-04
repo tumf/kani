@@ -340,9 +340,10 @@ Optional annotator configuration (for `scripts/build_agentic_dataset.py --annota
 ```yaml
 feature_annotator:
   model: "gemini-2.5-flash-lite"
-  base_url: "${CLIPROXY_BASE_URL}"
-  api_key: "${CLIPROXY_API_KEY}"
+  provider: "cliproxy"  # optional; defaults to default_provider
 ```
+
+`feature_annotator` and `llm_classifier` connection details are provider-resolved. In `config.yaml`, set `model` + optional `provider`; do not set `base_url` or `api_key` directly in these sections.
 
 | Env var | Default | Description |
 |---------|---------|-------------|

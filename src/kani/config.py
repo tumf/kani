@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -152,20 +152,22 @@ class ProfileConfig(BaseModel):
     tiers: dict[str, TierModelConfig]  # SIMPLE, MEDIUM, COMPLEX, REASONING
 
 
-class LLMClassifierConfig(BaseModel):
+class _AuxLLMConfigBase(BaseModel):
+    """Common base for auxiliary LLM settings."""
+
+    model: str = "google/gemini-2.5-flash-lite"
+    provider: str = ""
+
+    # Disallow direct base_url/api_key storage; they must be resolved by provider.
+    model_config = ConfigDict(extra="forbid")
+
+
+class LLMClassifierConfig(_AuxLLMConfigBase):
     """Configuration for the LLM-as-judge escalation classifier."""
 
-    model: str = "google/gemini-2.5-flash-lite"
-    base_url: str = "https://openrouter.ai/api/v1"
-    api_key: str = ""
 
-
-class FeatureAnnotatorConfig(BaseModel):
+class FeatureAnnotatorConfig(_AuxLLMConfigBase):
     """Configuration for offline feature annotation."""
-
-    model: str = "google/gemini-2.5-flash-lite"
-    base_url: str = "https://openrouter.ai/api/v1"
-    api_key: str = ""
 
 
 class SyncCompactionConfig(BaseModel):
@@ -255,6 +257,30 @@ class ModelCapabilityEntry(BaseModel):
     )  # e.g. ['vision', 'tools', 'json_mode']
 
 
+def _resolve_provider_for_aux_llm(
+    *,
+    aux_cfg: LLMClassifierConfig | FeatureAnnotatorConfig | None = None,
+    providers: dict[str, ProviderConfig] | None = None,
+    aux_key: str,
+    default_provider: str,
+) -> tuple[str, str]:
+    """Resolve base_url/api_key for a classifier/annotator config via provider."""
+
+    resolved_provider = (
+        aux_cfg.provider if aux_cfg and aux_cfg.provider else default_provider
+    )
+    if providers is None:
+        providers = {}
+
+    provider_cfg = providers.get(resolved_provider)
+    if provider_cfg is None:
+        raise ValueError(
+            f"Unknown provider '{resolved_provider}' for {aux_key}; check config or default_provider"
+        )
+
+    return provider_cfg.base_url, resolve_env(provider_cfg.api_key)
+
+
 class KaniConfig(BaseModel):
     """Top-level Kani configuration."""
 
@@ -268,6 +294,52 @@ class KaniConfig(BaseModel):
     feature_annotator: FeatureAnnotatorConfig | None = None
     smart_proxy: SmartProxyConfig = Field(default_factory=SmartProxyConfig)
     model_capabilities: list[ModelCapabilityEntry] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_aux_llm_provider_resolution(self) -> "KaniConfig":
+        """Ensure auxiliary LLM configs resolve to known providers."""
+
+        if self.llm_classifier is not None:
+            _resolve_provider_for_aux_llm(
+                aux_cfg=self.llm_classifier,
+                providers=self.providers,
+                aux_key="llm_classifier",
+                default_provider=self.default_provider,
+            )
+
+        if self.feature_annotator is not None:
+            _resolve_provider_for_aux_llm(
+                aux_cfg=self.feature_annotator,
+                providers=self.providers,
+                aux_key="feature_annotator",
+                default_provider=self.default_provider,
+            )
+
+        return self
+
+    def llm_classifier_resolved(self) -> tuple[str, str] | None:
+        """Return (base_url, api_key) resolved from llm_classifier.provider/default_provider."""
+
+        if self.llm_classifier is None:
+            return None
+        return _resolve_provider_for_aux_llm(
+            aux_cfg=self.llm_classifier,
+            providers=self.providers,
+            aux_key="llm_classifier",
+            default_provider=self.default_provider,
+        )
+
+    def feature_annotator_resolved(self) -> tuple[str, str] | None:
+        """Return (base_url, api_key) resolved from feature_annotator.provider/default_provider."""
+
+        if self.feature_annotator is None:
+            return None
+        return _resolve_provider_for_aux_llm(
+            aux_cfg=self.feature_annotator,
+            providers=self.providers,
+            aux_key="feature_annotator",
+            default_provider=self.default_provider,
+        )
 
 
 # ---------------------------------------------------------------------------
