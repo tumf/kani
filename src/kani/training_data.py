@@ -11,6 +11,7 @@ from typing import Any, Protocol, TypedDict
 import httpx
 
 from kani.classification_context import build_classification_input
+from kani.config import load_config
 from kani.dirs import data_dir, log_dir
 from kani.scorer import SEMANTIC_DIMENSIONS
 
@@ -60,18 +61,29 @@ class LLMFeatureAnnotator:
         base_url: str | None = None,
         api_key: str | None = None,
     ) -> None:
-        self.model = model or os.environ.get(
-            "KANI_LLM_ANNOTATOR_MODEL", "google/gemini-2.5-flash-lite"
+        cfg = None
+        try:
+            loaded = load_config()
+            cfg = loaded.feature_annotator
+        except Exception:
+            pass
+
+        self.model = (
+            model
+            or os.environ.get("KANI_LLM_ANNOTATOR_MODEL")
+            or (cfg.model if cfg else None)
+            or "google/gemini-2.5-flash-lite"
         )
         self.base_url = (
             base_url
-            or os.environ.get(
-                "KANI_LLM_ANNOTATOR_BASE_URL", "https://openrouter.ai/api/v1"
-            )
+            or os.environ.get("KANI_LLM_ANNOTATOR_BASE_URL")
+            or (cfg.base_url if cfg else None)
+            or "https://openrouter.ai/api/v1"
         ).rstrip("/")
         self.api_key = (
             api_key
             or os.environ.get("KANI_LLM_ANNOTATOR_API_KEY")
+            or (cfg.api_key if cfg else None)
             or os.environ.get("OPENROUTER_API_KEY", "")
         )
 

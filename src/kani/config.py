@@ -160,6 +160,14 @@ class LLMClassifierConfig(BaseModel):
     api_key: str = ""
 
 
+class FeatureAnnotatorConfig(BaseModel):
+    """Configuration for offline feature annotation."""
+
+    model: str = "google/gemini-2.5-flash-lite"
+    base_url: str = "https://openrouter.ai/api/v1"
+    api_key: str = ""
+
+
 class SyncCompactionConfig(BaseModel):
     """Configuration for synchronous request-time context compaction."""
 
@@ -257,6 +265,7 @@ class KaniConfig(BaseModel):
     profiles: dict[str, ProfileConfig] = Field(default_factory=dict)
     default_profile: str = "auto"
     llm_classifier: LLMClassifierConfig | None = None
+    feature_annotator: FeatureAnnotatorConfig | None = None
     smart_proxy: SmartProxyConfig = Field(default_factory=SmartProxyConfig)
     model_capabilities: list[ModelCapabilityEntry] = Field(default_factory=list)
 

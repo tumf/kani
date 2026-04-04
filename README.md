@@ -335,13 +335,22 @@ curl -v -X POST http://localhost:18420/v1/chat/completions \
 
 Runtime routing does not call an LLM. LLM usage is limited to offline dataset generation when logs are missing semantic labels.
 
-Optional annotator configuration (for `scripts/build_agentic_dataset.py --annotate-missing`):
+Optional annotator configuration (for `scripts/build_agentic_dataset.py --annotate-missing`) can be set in `config.yaml` under `feature_annotator`, or overridden with env vars:
+
+```yaml
+feature_annotator:
+  model: "gemini-2.5-flash-lite"
+  base_url: "${CLIPROXY_BASE_URL}"
+  api_key: "${CLIPROXY_API_KEY}"
+```
 
 | Env var | Default | Description |
 |---------|---------|-------------|
 | `KANI_LLM_ANNOTATOR_MODEL` | `google/gemini-2.5-flash-lite` | Annotation model |
 | `KANI_LLM_ANNOTATOR_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
 | `KANI_LLM_ANNOTATOR_API_KEY` | `$OPENROUTER_API_KEY` | API key |
+
+Priority is: CLI flags > env vars > `config.yaml` `feature_annotator` > built-in defaults.
 
 ## Routing logs
 

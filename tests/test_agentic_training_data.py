@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from kani.training_data import (
+    LLMFeatureAnnotator,
     _classification_prompt_from_record,
     build_feature_dataset,
     deterministic_token_count,
@@ -143,3 +144,25 @@ def test_build_feature_dataset_persists_examples(tmp_path: Path) -> None:
     assert len(examples) == 1
     persisted = json.loads(output_path.read_text(encoding="utf-8"))
     assert persisted == examples
+
+
+def test_llm_feature_annotator_uses_config_defaults(monkeypatch) -> None:
+    class _FeatureAnnotatorConfig:
+        model = "gemini-2.5-flash-lite"
+        base_url = "http://127.0.0.1:8317/v1"
+        api_key = "test-key"
+
+    class _Config:
+        feature_annotator = _FeatureAnnotatorConfig()
+
+    monkeypatch.delenv("KANI_LLM_ANNOTATOR_MODEL", raising=False)
+    monkeypatch.delenv("KANI_LLM_ANNOTATOR_BASE_URL", raising=False)
+    monkeypatch.delenv("KANI_LLM_ANNOTATOR_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("kani.training_data.load_config", lambda: _Config())
+
+    annotator = LLMFeatureAnnotator()
+
+    assert annotator.model == "gemini-2.5-flash-lite"
+    assert annotator.base_url == "http://127.0.0.1:8317/v1"
+    assert annotator.api_key == "test-key"
