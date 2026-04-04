@@ -95,34 +95,45 @@ class LLMFeatureAnnotator:
                 "KANI_LLM_ANNOTATOR_API_KEY or OPENROUTER_API_KEY is required"
             )
 
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": self._PROMPT_TEMPLATE.format(prompt=prompt[:2000]),
-                    }
-                ],
-                "temperature": 0.0,
-                "max_tokens": 300,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=15.0,
-        )
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": self._PROMPT_TEMPLATE.format(
+                                prompt=prompt[:2000]
+                            ),
+                        }
+                    ],
+                    "temperature": 0.0,
+                    "max_tokens": 300,
+                },
+                timeout=30.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return None
+
         content = (
             data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
         )
         if not content:
             return None
-        parsed = json.loads(content)
+        stripped = content.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
         if not isinstance(parsed, dict):
             return None
 
@@ -147,7 +158,10 @@ def load_routing_records(paths: list[Path]) -> list[dict[str, Any]]:
                 line = line.strip()
                 if not line:
                     continue
-                payload = json.loads(line)
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
                 if isinstance(payload, dict):
                     records.append(payload)
     return records
@@ -197,12 +211,73 @@ def _classification_prompt_from_record(record: dict[str, Any]) -> str:
     return str(record.get("prompt") or record.get("prompt_preview") or "").strip()
 
 
+def _make_example(
+    prompt: str,
+    labels: dict[str, str],
+    record: dict[str, Any],
+    source: str,
+) -> DistilledFeatureExample:
+    return {
+        "prompt": prompt,
+        "tokenCount": deterministic_token_count(prompt),
+        "codePresence": labels["codePresence"],
+        "reasoningMarkers": labels["reasoningMarkers"],
+        "technicalTerms": labels["technicalTerms"],
+        "creativeMarkers": labels["creativeMarkers"],
+        "simpleIndicators": labels["simpleIndicators"],
+        "multiStepPatterns": labels["multiStepPatterns"],
+        "questionComplexity": labels["questionComplexity"],
+        "imperativeVerbs": labels["imperativeVerbs"],
+        "constraintCount": labels["constraintCount"],
+        "outputFormat": labels["outputFormat"],
+        "referenceComplexity": labels["referenceComplexity"],
+        "negationComplexity": labels["negationComplexity"],
+        "domainSpecificity": labels["domainSpecificity"],
+        "agenticTask": labels["agenticTask"],
+        "timestamp": str(record.get("timestamp")) if record.get("timestamp") else None,
+        "source": source,
+    }
+
+
+def _save_examples(
+    latest_by_prompt: dict[str, DistilledFeatureExample],
+    output_path: Path,
+) -> list[DistilledFeatureExample]:
+    examples = sorted(
+        latest_by_prompt.values(),
+        key=lambda item: ((item["timestamp"] or ""), item["prompt"]),
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(examples, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return examples
+
+
+_CHECKPOINT_INTERVAL = 10
+
+
 def extract_distilled_feature_examples(
     records: list[dict[str, Any]],
     *,
     annotator: FeatureAnnotator | None = None,
+    checkpoint_path: Path | None = None,
 ) -> list[DistilledFeatureExample]:
     latest_by_prompt: dict[str, DistilledFeatureExample] = {}
+
+    if checkpoint_path and checkpoint_path.exists():
+        try:
+            existing = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if isinstance(existing, list):
+                for item in existing:
+                    prompt = item.get("prompt", "")
+                    if prompt:
+                        latest_by_prompt[prompt] = item
+                print(f"  Resumed {len(latest_by_prompt)} examples from checkpoint")
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    annotated_since_save = 0
 
     for record in records:
         prompt = _classification_prompt_from_record(record)
@@ -212,8 +287,11 @@ def extract_distilled_feature_examples(
         labels = _extract_semantic_labels_from_record(record)
         source = "log"
         if labels is None and annotator is not None:
+            if prompt in latest_by_prompt:
+                continue
             labels = annotator.annotate(prompt)
             source = "annotated"
+            annotated_since_save += 1
 
         if labels is None:
             continue
@@ -221,34 +299,18 @@ def extract_distilled_feature_examples(
         if not _validate_semantic_labels(labels):
             continue
 
-        example: DistilledFeatureExample = {
-            "prompt": prompt,
-            "tokenCount": deterministic_token_count(prompt),
-            "codePresence": labels["codePresence"],
-            "reasoningMarkers": labels["reasoningMarkers"],
-            "technicalTerms": labels["technicalTerms"],
-            "creativeMarkers": labels["creativeMarkers"],
-            "simpleIndicators": labels["simpleIndicators"],
-            "multiStepPatterns": labels["multiStepPatterns"],
-            "questionComplexity": labels["questionComplexity"],
-            "imperativeVerbs": labels["imperativeVerbs"],
-            "constraintCount": labels["constraintCount"],
-            "outputFormat": labels["outputFormat"],
-            "referenceComplexity": labels["referenceComplexity"],
-            "negationComplexity": labels["negationComplexity"],
-            "domainSpecificity": labels["domainSpecificity"],
-            "agenticTask": labels["agenticTask"],
-            "timestamp": str(record.get("timestamp"))
-            if record.get("timestamp")
-            else None,
-            "source": source,
-        }
+        example = _make_example(prompt, labels, record, source)
 
         current = latest_by_prompt.get(prompt)
         if current is None or (example["timestamp"] or "") >= (
             current["timestamp"] or ""
         ):
             latest_by_prompt[prompt] = example
+
+        if checkpoint_path and annotated_since_save >= _CHECKPOINT_INTERVAL:
+            _save_examples(latest_by_prompt, checkpoint_path)
+            print(f"  Checkpoint: {len(latest_by_prompt)} examples saved")
+            annotated_since_save = 0
 
     return sorted(
         latest_by_prompt.values(),
@@ -263,12 +325,14 @@ def build_feature_dataset(
     annotator: FeatureAnnotator | None = None,
 ) -> list[DistilledFeatureExample]:
     examples = extract_distilled_feature_examples(
-        load_routing_records(log_paths), annotator=annotator
+        load_routing_records(log_paths),
+        annotator=annotator,
+        checkpoint_path=output_path if annotator else None,
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(examples, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    _save_examples(
+        {e["prompt"]: e for e in examples},
+        output_path,
+    )
     return examples
 
 

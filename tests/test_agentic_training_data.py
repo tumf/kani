@@ -171,3 +171,38 @@ def test_llm_feature_annotator_uses_provider_resolved_config_defaults(
     assert annotator.model == "gemini-2.5-flash-lite"
     assert annotator.base_url == "http://127.0.0.1:8317/v1"
     assert annotator.api_key == "test-key"
+
+
+def test_checkpoint_resumes_and_skips_already_annotated(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "dataset.json"
+    existing = [
+        {
+            "prompt": "Already done",
+            "tokenCount": 2,
+            **_labels("high"),
+            "timestamp": "2026-04-01T00:00:00",
+            "source": "annotated",
+        }
+    ]
+    checkpoint.write_text(json.dumps(existing), encoding="utf-8")
+
+    records = [
+        {
+            "timestamp": "2026-04-02T00:00:00",
+            "prompt": "Already done",
+            "signals": {},
+        },
+        {
+            "timestamp": "2026-04-02T01:00:00",
+            "prompt": "New prompt",
+            "signals": {},
+        },
+    ]
+    annotator = _StubAnnotator({"New prompt": _labels("medium")})
+
+    examples = extract_distilled_feature_examples(
+        records, annotator=annotator, checkpoint_path=checkpoint
+    )
+
+    assert len(examples) == 2
+    assert annotator.calls == ["New prompt"]
