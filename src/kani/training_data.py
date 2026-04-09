@@ -254,7 +254,7 @@ def _save_examples(
     return examples
 
 
-_CHECKPOINT_INTERVAL = 10
+_CHECKPOINT_INTERVAL = 1
 
 
 def extract_distilled_feature_examples(
@@ -278,22 +278,31 @@ def extract_distilled_feature_examples(
             pass
 
     annotated_since_save = 0
+    skipped = 0
+    total = len(records)
 
-    for record in records:
+    for idx, record in enumerate(records, 1):
         prompt = _classification_prompt_from_record(record)
         if not prompt:
+            skipped += 1
+            print(f"  [{idx}/{total}] skip: empty prompt")
             continue
 
         labels = _extract_semantic_labels_from_record(record)
         source = "log"
         if labels is None and annotator is not None:
             if prompt in latest_by_prompt:
+                skipped += 1
+                print(f"  [{idx}/{total}] skip: duplicate")
                 continue
+            print(f"  [{idx}/{total}] annotate: {prompt[:120].replace(chr(10), ' ')}")
             labels = annotator.annotate(prompt)
             source = "annotated"
             annotated_since_save += 1
 
         if labels is None:
+            skipped += 1
+            print(f"  [{idx}/{total}] skip: no labels returned")
             continue
 
         if not _validate_semantic_labels(labels):
@@ -309,7 +318,9 @@ def extract_distilled_feature_examples(
 
         if checkpoint_path and annotated_since_save >= _CHECKPOINT_INTERVAL:
             _save_examples(latest_by_prompt, checkpoint_path)
-            print(f"  Checkpoint: {len(latest_by_prompt)} examples saved")
+            print(
+                f"  [{idx}/{total}] checkpoint: {len(latest_by_prompt)} examples saved"
+            )
             annotated_since_save = 0
 
     return sorted(

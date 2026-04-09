@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from kani.scorer import ClassificationResult, Scorer, ScoringConfig, Tier
+from kani.config import KaniConfig
+from kani.scorer import (
+    ClassificationResult,
+    Scorer,
+    ScoringConfig,
+    Tier,
+    _build_embedding_client,
+)
 
 
 class _StubFeatureClassifier:
@@ -69,6 +76,58 @@ class _StubFeatureClassifier:
             },
             0.81,
         )
+
+
+class TestEmbeddingClientConfig:
+    def test_embedding_provider_resolves_via_provider_map(self) -> None:
+        config = KaniConfig.model_validate(
+            {
+                "default_provider": "cliproxy",
+                "providers": {
+                    "cliproxy": {
+                        "name": "cliproxy",
+                        "base_url": "http://example.invalid/v1",
+                        "api_key": "secret",
+                    }
+                },
+                "embedding": {
+                    "provider": "cliproxy",
+                    "model": "text-embedding-test",
+                },
+            }
+        )
+
+        with patch("kani.config.load_config", return_value=config):
+            client, model = _build_embedding_client("fallback-model")
+
+        assert str(client.base_url) == "http://example.invalid/v1/"
+        assert model == "text-embedding-test"
+
+    def test_embedding_base_url_still_takes_precedence(self) -> None:
+        config = KaniConfig.model_validate(
+            {
+                "default_provider": "cliproxy",
+                "providers": {
+                    "cliproxy": {
+                        "name": "cliproxy",
+                        "base_url": "http://provider.invalid/v1",
+                        "api_key": "secret",
+                    }
+                },
+                "embedding": {
+                    "provider": "cliproxy",
+                    "base_url": "http://direct.invalid/v1",
+                    "api_key": "direct-key",
+                    "model": "text-embedding-direct",
+                },
+            }
+        )
+
+        with patch("kani.config.load_config", return_value=config):
+            client, model = _build_embedding_client("fallback-model")
+
+        assert str(client.base_url) == "http://direct.invalid/v1/"
+        assert model == "text-embedding-direct"
 
 
 class TestDistilledFeatureScorer:

@@ -7,7 +7,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from kani.feature_training import load_feature_examples, train_feature_classifier
+from kani.feature_training import (
+    load_feature_examples,
+    load_or_compute_embeddings,
+    train_feature_classifier,
+)
 
 
 def _row(agentic: str) -> dict[str, str]:
@@ -51,6 +55,39 @@ def test_load_feature_examples_rejects_invalid_labels(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Invalid label for reasoningMarkers"):
         load_feature_examples(data_path)
+
+
+def test_load_or_compute_embeddings_cache_key_includes_model(tmp_path: Path) -> None:
+    class _EmbeddingsAPI:
+        def __init__(self, vector: list[float]) -> None:
+            self._vector = vector
+
+        def create(self, input: list[str], model: str) -> object:
+            return type(
+                "Resp",
+                (),
+                {
+                    "data": [
+                        type("Item", (), {"embedding": self._vector}) for _ in input
+                    ]
+                },
+            )()
+
+    class _Client:
+        def __init__(self, vector: list[float]) -> None:
+            self.embeddings = _EmbeddingsAPI(vector)
+
+    cache_dir = tmp_path / "cache"
+    texts = ["hello"]
+
+    first = load_or_compute_embeddings(_Client([1.0, 2.0]), texts, cache_dir, "model-a")
+    second = load_or_compute_embeddings(
+        _Client([3.0, 4.0]), texts, cache_dir, "model-b"
+    )
+
+    assert first.tolist() == [[1.0, 2.0]]
+    assert second.tolist() == [[3.0, 4.0]]
+    assert len(list(cache_dir.glob("embeddings_*.npy"))) == 2
 
 
 def test_train_feature_classifier_writes_model_bundle(

@@ -78,6 +78,25 @@ class ClassificationResult:
 def _build_embedding_client(model_name: str) -> tuple[Any, str]:
     from openai import OpenAI
 
+    from kani.config import load_config
+
+    try:
+        loaded = load_config()
+        cfg = loaded.embedding
+    except Exception:
+        loaded = None
+        cfg = None
+
+    if loaded and cfg:
+        resolved = loaded.embedding_resolved()
+        if resolved is not None:
+            base_url, api_key = resolved
+            resolved_model = cfg.model or model_name
+            return OpenAI(
+                api_key=api_key or "dummy",
+                base_url=base_url,
+            ), resolved_model
+
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     base_url = None
     resolved_model = model_name
@@ -88,7 +107,7 @@ def _build_embedding_client(model_name: str) -> tuple[Any, str]:
             resolved_model = f"openai/{resolved_model}"
 
     if not api_key:
-        raise RuntimeError("No OPENAI_API_KEY or OPENROUTER_API_KEY for embeddings")
+        raise RuntimeError("No embedding config or OPENAI_API_KEY / OPENROUTER_API_KEY")
 
     return OpenAI(api_key=api_key, base_url=base_url), resolved_model
 
@@ -115,7 +134,7 @@ class DistilledFeatureClassifier:
         self.tier_thresholds: dict[str, float] = dict(
             data.get(
                 "tier_thresholds",
-                {"SIMPLE": 0.2, "MEDIUM": 0.45, "COMPLEX": 0.7},
+                {"SIMPLE": 0.2, "MEDIUM": 0.6, "COMPLEX": 0.8},
             )
         )
         self._client: Any | None = None
@@ -148,7 +167,7 @@ class DistilledFeatureClassifier:
 
     def _embed(self, text: str) -> np.ndarray:
         client = self._get_client()
-        resp = client.embeddings.create(input=[text], model=self.embedding_model)
+        resp = client.embeddings.create(input=[text[:4000]], model=self.embedding_model)
         return np.array([resp.data[0].embedding], dtype=np.float32)
 
     def predict(self, text: str) -> tuple[dict[str, str], float]:
@@ -168,7 +187,12 @@ class DistilledFeatureClassifier:
             dim_proba = probs[index][0]
             confidences.append(float(np.max(dim_proba)))
 
-        confidence = float(np.mean(confidences)) if confidences else 0.0
+        if not confidences:
+            confidence = 0.0
+        else:
+            confidences.sort(reverse=True)
+            top_k = 5
+            confidence = float(np.mean(confidences[:top_k]))
         return labels, confidence
 
 
@@ -188,6 +212,54 @@ def _tier_from_score(score: float, thresholds: dict[str, float]) -> Tier:
     if score <= complex_max:
         return Tier.COMPLEX
     return Tier.REASONING
+
+
+def _semantic_axis_score(
+    semantic_labels: dict[str, str],
+    names: list[str],
+) -> float:
+    values = [
+        _DIMENSION_VALUE_MAP.get(semantic_labels.get(name, "low"), 0.0)
+        for name in names
+    ]
+    return sum(values) / max(len(values), 1)
+
+
+def _tier_from_axes(
+    score: float,
+    semantic_labels: dict[str, str],
+    thresholds: dict[str, float],
+) -> Tier:
+    base_tier = _tier_from_score(score, thresholds)
+    if base_tier in {Tier.SIMPLE, Tier.MEDIUM}:
+        return base_tier
+
+    complex_score = _semantic_axis_score(
+        semantic_labels,
+        [
+            "codePresence",
+            "multiStepPatterns",
+            "constraintCount",
+            "imperativeVerbs",
+            "agenticTask",
+            "domainSpecificity",
+            "technicalTerms",
+        ],
+    )
+    reasoning_score = _semantic_axis_score(
+        semantic_labels,
+        [
+            "reasoningMarkers",
+            "questionComplexity",
+            "referenceComplexity",
+            "negationComplexity",
+            "agenticTask",
+        ],
+    )
+
+    if reasoning_score >= 0.5 and reasoning_score >= complex_score:
+        return Tier.REASONING
+    return Tier.COMPLEX
 
 
 class Scorer:
@@ -256,24 +328,9 @@ class Scorer:
         score = total_weighted / max(total_weight, 1e-9)
         return dimensions, score, agentic_score
 
-    def classify(self, text: str) -> ClassificationResult:
-        log.debug("Scoring classification input text_length=%d", len(text))
-        feature_clf = self._load_feature_model()
-        if feature_clf is None:
-            result = ClassificationResult(
-                score=0.0,
-                tier=self.config.fallback_tier,
-                confidence=self.config.fallback_confidence,
-                signals={"method": {"raw": "default", "matches": 0}},
-                agentic_score=0.0,
-                dimensions=[],
-            )
-            if self._enable_routing_log:
-                from kani.logger import RoutingLogger
-
-                RoutingLogger.log(text, result)
-            return result
-
+    def _classify_with_features(
+        self, text: str, feature_clf: DistilledFeatureClassifier
+    ) -> ClassificationResult:
         token_count = _token_count(text)
         semantic_labels, confidence = feature_clf.predict(text)
         dimensions, score, agentic_score = self._build_dimensions(
@@ -281,7 +338,7 @@ class Scorer:
             semantic_labels,
             feature_clf.weights,
         )
-        tier = _tier_from_score(score, feature_clf.tier_thresholds)
+        tier = _tier_from_axes(score, semantic_labels, feature_clf.tier_thresholds)
 
         signals: dict[str, Any] = {
             "method": {"raw": "distilled-features", "matches": 0},
@@ -304,4 +361,29 @@ class Scorer:
 
             RoutingLogger.log(text, result)
 
+        return result
+
+    def classify(self, text: str) -> ClassificationResult:
+        log.debug("Scoring classification input text_length=%d", len(text))
+        feature_clf = self._load_feature_model()
+        if feature_clf is not None:
+            try:
+                return self._classify_with_features(text, feature_clf)
+            except Exception:
+                log.warning(
+                    "Feature classifier predict failed, falling back", exc_info=True
+                )
+
+        result = ClassificationResult(
+            score=0.0,
+            tier=self.config.fallback_tier,
+            confidence=self.config.fallback_confidence,
+            signals={"method": {"raw": "default", "matches": 0}},
+            agentic_score=0.0,
+            dimensions=[],
+        )
+        if self._enable_routing_log:
+            from kani.logger import RoutingLogger
+
+            RoutingLogger.log(text, result)
         return result

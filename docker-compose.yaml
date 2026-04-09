@@ -14,8 +14,7 @@ services:
       # Log / data dirs — adjust paths or use named volumes as needed.
       - ${KANI_LOG_DIR:-./data/log}:/root/.local/state/kani/log:rw
       - ${KANI_DATA_DIR:-./data/share}:/root/.local/share/kani:rw
-      # Uncomment to supply a pre-trained tier_classifier.pkl:
-      # - ./models:/app/models:ro
+      - ./models:/app/models:ro
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       # Add extra provider keys used in config.yaml:

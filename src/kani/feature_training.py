@@ -19,12 +19,14 @@ from sklearn.metrics import classification_report
 from sklearn.multioutput import MultiOutputClassifier
 from sklearn.preprocessing import LabelEncoder
 
+from kani.config import load_config
 from kani.scorer import SEMANTIC_DIMENSIONS
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_MODEL_OPENROUTER = "openai/text-embedding-3-small"
 EMBEDDING_DIM = 1536
 BATCH_SIZE = 100
+EMBEDDING_TEXT_LIMIT = 4000
 VALID_DIMENSION_LABELS = {"low", "medium", "high"}
 DEFAULT_WEIGHTS: dict[str, float] = {
     "tokenCount": 0.15,
@@ -70,7 +72,7 @@ def load_or_compute_embeddings(
     model: str = EMBEDDING_MODEL,
 ) -> np.ndarray[Any, np.dtype[np.float32]]:
     content_hash = hashlib.sha256(
-        json.dumps(texts, sort_keys=True).encode()
+        json.dumps({"model": model, "texts": texts}, sort_keys=True).encode()
     ).hexdigest()[:12]
     cache_file = cache_path / f"embeddings_{content_hash}.npy"
 
@@ -87,13 +89,33 @@ def load_or_compute_embeddings(
 
 
 def build_embedding_client() -> tuple[OpenAI, str]:
+    loaded = None
+    cfg = None
+    try:
+        loaded = load_config()
+        cfg = loaded.embedding
+    except Exception:
+        pass
+
+    if loaded and cfg:
+        resolved = loaded.embedding_resolved()
+        if resolved is not None:
+            base_url, api_key = resolved
+            print(f"  Using config embedding: {base_url} model={cfg.model}")
+            return OpenAI(
+                api_key=api_key or "dummy",
+                base_url=base_url,
+            ), cfg.model
+
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY")
     base_url = None
     if not os.environ.get("OPENAI_API_KEY") and os.environ.get("OPENROUTER_API_KEY"):
         base_url = "https://openrouter.ai/api/v1"
         print("  Using OpenRouter for embeddings")
     if not api_key:
-        raise RuntimeError("Set OPENAI_API_KEY or OPENROUTER_API_KEY")
+        raise RuntimeError(
+            "Set embedding config in config.yaml, or OPENAI_API_KEY / OPENROUTER_API_KEY"
+        )
 
     embedding_model = EMBEDDING_MODEL_OPENROUTER if base_url else EMBEDDING_MODEL
     return OpenAI(api_key=api_key, base_url=base_url), embedding_model
@@ -103,7 +125,7 @@ def load_feature_examples(data_path: Path) -> tuple[list[str], dict[str, list[st
     with open(data_path, encoding="utf-8") as f:
         dataset = json.load(f)
 
-    prompts = [str(item["prompt"]).strip() for item in dataset]
+    prompts = [str(item["prompt"]).strip()[:EMBEDDING_TEXT_LIMIT] for item in dataset]
     if not prompts:
         raise ValueError("Feature training dataset is empty")
     if any(not prompt for prompt in prompts):

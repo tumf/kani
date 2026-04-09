@@ -170,6 +170,15 @@ class FeatureAnnotatorConfig(_AuxLLMConfigBase):
     """Configuration for offline feature annotation."""
 
 
+class EmbeddingConfig(BaseModel):
+    """Configuration for embedding API used by training and scoring."""
+
+    model: str = "text-embedding-3-small"
+    provider: str = ""
+    base_url: str = ""
+    api_key: str = ""
+
+
 class SyncCompactionConfig(BaseModel):
     """Configuration for synchronous request-time context compaction."""
 
@@ -259,12 +268,15 @@ class ModelCapabilityEntry(BaseModel):
 
 def _resolve_provider_for_aux_llm(
     *,
-    aux_cfg: LLMClassifierConfig | FeatureAnnotatorConfig | None = None,
+    aux_cfg: LLMClassifierConfig
+    | FeatureAnnotatorConfig
+    | EmbeddingConfig
+    | None = None,
     providers: dict[str, ProviderConfig] | None = None,
     aux_key: str,
     default_provider: str,
 ) -> tuple[str, str]:
-    """Resolve base_url/api_key for a classifier/annotator config via provider."""
+    """Resolve base_url/api_key for a classifier/annotator/embedding config via provider."""
 
     resolved_provider = (
         aux_cfg.provider if aux_cfg and aux_cfg.provider else default_provider
@@ -292,6 +304,7 @@ class KaniConfig(BaseModel):
     default_profile: str = "auto"
     llm_classifier: LLMClassifierConfig | None = None
     feature_annotator: FeatureAnnotatorConfig | None = None
+    embedding: EmbeddingConfig | None = None
     smart_proxy: SmartProxyConfig = Field(default_factory=SmartProxyConfig)
     model_capabilities: list[ModelCapabilityEntry] = Field(default_factory=list)
 
@@ -312,6 +325,14 @@ class KaniConfig(BaseModel):
                 aux_cfg=self.feature_annotator,
                 providers=self.providers,
                 aux_key="feature_annotator",
+                default_provider=self.default_provider,
+            )
+
+        if self.embedding is not None and self.embedding.provider:
+            _resolve_provider_for_aux_llm(
+                aux_cfg=self.embedding,
+                providers=self.providers,
+                aux_key="embedding",
                 default_provider=self.default_provider,
             )
 
@@ -340,6 +361,22 @@ class KaniConfig(BaseModel):
             aux_key="feature_annotator",
             default_provider=self.default_provider,
         )
+
+    def embedding_resolved(self) -> tuple[str, str] | None:
+        """Return (base_url, api_key) resolved from embedding.provider/default_provider."""
+
+        if self.embedding is None:
+            return None
+        if self.embedding.base_url:
+            return self.embedding.base_url, self.embedding.api_key
+        if self.embedding.provider:
+            return _resolve_provider_for_aux_llm(
+                aux_cfg=self.embedding,
+                providers=self.providers,
+                aux_key="embedding",
+                default_provider=self.default_provider,
+            )
+        return None
 
 
 # ---------------------------------------------------------------------------
