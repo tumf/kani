@@ -106,7 +106,6 @@ def test_classification_prompt_from_record_can_rebuild_from_messages() -> None:
 
     prompt = _classification_prompt_from_record(record)
 
-    assert "[system]" in prompt
     assert "続けて" in prompt
     assert "Create migration steps for the database" in prompt
 

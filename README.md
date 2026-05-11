@@ -22,8 +22,8 @@ Request → Distilled Feature Classifier (15 dimensions) → Tier + Agentic Scor
 **Classification pipeline:**
 
 1. **Distilled feature classifier** — deterministic `tokenCount` + learned 14 semantic dimensions
-2. **Weighted synthesis** — one unified score drives tier selection (`SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`)
-3. **Unified agentic score** — `agenticTask` dimension is mapped directly to `agentic_score`
+2. **Axis-based scoring** — separate `complexity` and `reasoning` scores drive tier selection
+3. **Independent agentic score** — `agenticTask` dimension is exposed as `agentic_score` without affecting tier
 4. **Conservative default** — fall back to `MEDIUM` when the feature model is unavailable
 5. **Capability filter** — auto-detects vision/tools/json_mode from the request and escalates to a capable model
 
@@ -36,9 +36,17 @@ The scorer is now distilled-feature-first:
 
 - compute `tokenCount` deterministically
 - infer 14 semantic dimensions (`low` / `medium` / `high`) using a learned multi-output classifier
-- combine all 15 dimensions with explicit weights to determine tier and confidence
-- derive `agentic_score` from the `agenticTask` dimension in the same pipeline
+- compute separate **complexity** and **reasoning** axis scores from the dimensions
+- determine tier from these axis scores (`SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`)
+- expose `agentic_score` from the `agenticTask` dimension independently (does not affect tier)
 - return a conservative default tier only when the feature model is unavailable
+
+**Axis-based tier thresholds:**
+
+- **REASONING**: `reasoning_score >= 0.75` (4 reasoning dimensions averaged)
+- **COMPLEX**: `complexity_score >= 0.8` (6 complexity dimensions averaged)
+- **MEDIUM**: `complexity_score >= 0.5`
+- **SIMPLE**: below all thresholds
 
 This makes routing behavior easier to improve with data, because changes come from retraining and calibration rather than runtime prompt engineering.
 

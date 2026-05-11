@@ -134,7 +134,7 @@ class DistilledFeatureClassifier:
         self.tier_thresholds: dict[str, float] = dict(
             data.get(
                 "tier_thresholds",
-                {"SIMPLE": 0.2, "MEDIUM": 0.6, "COMPLEX": 0.8},
+                {"SIMPLE": 0.2, "MEDIUM": 0.45, "COMPLEX": 0.7},
             )
         )
         self._client: Any | None = None
@@ -187,12 +187,7 @@ class DistilledFeatureClassifier:
             dim_proba = probs[index][0]
             confidences.append(float(np.max(dim_proba)))
 
-        if not confidences:
-            confidence = 0.0
-        else:
-            confidences.sort(reverse=True)
-            top_k = 5
-            confidence = float(np.mean(confidences[:top_k]))
+        confidence = float(np.max(confidences)) if confidences else 0.0
         return labels, confidence
 
 
@@ -230,18 +225,13 @@ def _tier_from_axes(
     semantic_labels: dict[str, str],
     thresholds: dict[str, float],
 ) -> Tier:
-    base_tier = _tier_from_score(score, thresholds)
-    if base_tier in {Tier.SIMPLE, Tier.MEDIUM}:
-        return base_tier
-
-    complex_score = _semantic_axis_score(
+    complexity_score = _semantic_axis_score(
         semantic_labels,
         [
             "codePresence",
             "multiStepPatterns",
             "constraintCount",
             "imperativeVerbs",
-            "agenticTask",
             "domainSpecificity",
             "technicalTerms",
         ],
@@ -253,13 +243,16 @@ def _tier_from_axes(
             "questionComplexity",
             "referenceComplexity",
             "negationComplexity",
-            "agenticTask",
         ],
     )
 
-    if reasoning_score >= 0.5 and reasoning_score >= complex_score:
+    if reasoning_score >= 0.75:
         return Tier.REASONING
-    return Tier.COMPLEX
+    if complexity_score >= 0.8:
+        return Tier.COMPLEX
+    if complexity_score >= 0.5:
+        return Tier.MEDIUM
+    return Tier.SIMPLE
 
 
 class Scorer:
@@ -320,10 +313,11 @@ class Scorer:
                     weighted_score=weighted,
                 )
             )
-            total_weighted += weighted
-            total_weight += weight
             if dim == "agenticTask":
                 agentic_score = value
+                continue
+            total_weighted += weighted
+            total_weight += weight
 
         score = total_weighted / max(total_weight, 1e-9)
         return dimensions, score, agentic_score
