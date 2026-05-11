@@ -355,7 +355,7 @@ def ingest_jsonl_logs(days: int = 1) -> int:
             if not log_file.exists():
                 continue
 
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if not line.strip():
                         continue
@@ -377,7 +377,6 @@ def ingest_jsonl_logs(days: int = 1) -> int:
                         )
                     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         pass
-
         conn.commit()
 
     return count
@@ -407,14 +406,9 @@ def log_execution_event(
     try:
         log_directory = log_dir()
         log_directory.mkdir(parents=True, exist_ok=True)
-        now = datetime.now(timezone.utc)
-        event_ts = timestamp or now.isoformat()
-        day = _parse_iso(event_ts) or now
-        log_file = (
-            log_directory / f"{_EXECUTION_LOG_PREFIX}{day.strftime('%Y-%m-%d')}.jsonl"
-        )
+        event_timestamp = timestamp or datetime.now(timezone.utc).isoformat()
         record = {
-            "timestamp": event_ts,
+            "timestamp": event_timestamp,
             "request_id": request_id,
             "tier": tier,
             "score": score,
@@ -426,20 +420,28 @@ def log_execution_event(
             "prompt_tokens": int(prompt_tokens or 0),
             "completion_tokens": int(completion_tokens or 0),
             "total_tokens": int(total_tokens or 0),
-            "elapsed_ms": float(elapsed_ms) if elapsed_ms is not None else None,
+            "elapsed_ms": elapsed_ms,
             "compaction_mode": compaction_mode,
             "compaction_tokens_saved": int(compaction_tokens_saved or 0),
             "compaction_original_tokens": int(compaction_original_tokens or 0),
             "compaction_session_id": compaction_session_id,
         }
+        day = _parse_iso(event_timestamp) or datetime.now(timezone.utc)
+        log_file = (
+            log_directory / f"{_EXECUTION_LOG_PREFIX}{day.strftime('%Y-%m-%d')}.jsonl"
+        )
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+        _init_dashboard_db()
+        with sqlite3.connect(_DASHBOARD_DB_PATH) as conn:
+            _insert_execution_record(conn, record)
+            conn.commit()
     except Exception:
-        # Dashboard logging should never break request handling.
         pass
 
 
-def ingest_execution_logs(days: int = 30) -> int:
+def ingest_execution_logs(days: int = 1) -> int:
     """Ingest structured execution JSONL logs into SQLite."""
     _init_dashboard_db()
     log_directory = log_dir()
@@ -456,7 +458,7 @@ def ingest_execution_logs(days: int = 30) -> int:
             if not log_file.exists():
                 continue
 
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     if not line.strip():
                         continue

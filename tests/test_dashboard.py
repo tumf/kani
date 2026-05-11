@@ -369,6 +369,24 @@ def test_dashboard_stats_endpoint_accepts_repeated_profile_query_params(
     assert payload["windows"]["24h"]["prompt_tokens"] == 300
 
 
+def test_dashboard_endpoint_tolerates_invalid_utf8_in_routing_logs(
+    configured_dashboard, tmp_path
+):
+    now = datetime.now(timezone.utc)
+    log_file = tmp_path / "log" / f"routing-{now.strftime('%Y-%m-%d')}.jsonl"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    valid = (
+        '{"timestamp":"%s","tier":"SIMPLE","score":0.2,'
+        '"confidence":0.93,"agentic_score":0.1,"signals":{}}\n'
+    ) % now.isoformat()
+    log_file.write_bytes(valid.encode("utf-8") + b"\xe3broken\n")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+
+
 def test_log_execution_event_includes_compaction_fields(configured_dashboard, tmp_path):
     """log_execution_event writes compaction fields to JSONL and DB."""
     import json as _json
