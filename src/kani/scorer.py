@@ -364,9 +364,7 @@ class Scorer:
             try:
                 return self._classify_with_features(text, feature_clf)
             except Exception:
-                log.warning(
-                    "Feature classifier predict failed, falling back", exc_info=True
-                )
+                log.warning("Feature classifier predict failed, falling back")
 
         result = ClassificationResult(
             score=0.0,
