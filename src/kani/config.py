@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -73,6 +73,9 @@ class ProviderConfig(BaseModel):
     base_url: str  # e.g. 'https://openrouter.ai/api/v1'
     api_key: str = ""  # can reference env var with ${ENV_VAR}
     models: list[str] = Field(default_factory=list)  # optional model whitelist
+    reasoning_style: Literal["openai", "anthropic", "dashscope", "gemini", "none"] = (
+        "openai"
+    )
 
 
 class ModelEntry(BaseModel):

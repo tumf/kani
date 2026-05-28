@@ -785,6 +785,10 @@ async def _try_with_fallbacks(
         )
         fb_body = dict(body)
         fb_body["model"] = fb.model
+        # Restyle for fallback provider (do not reuse primary provider's reasoning shape)
+        if decision.tier == "REASONING":
+            fb_style = _get_reasoning_style_for_provider(fb.provider, runtime)
+            fb_body = _apply_reasoning_for_style(fb_body, fb_style)
         result = await _proxy_upstream(
             fb.base_url.rstrip("/"),
             fb.api_key or "",
@@ -812,6 +816,74 @@ async def _try_with_fallbacks(
 
     # All failed, return last error
     return result
+
+
+# ── Reasoning control injection helpers ───────────────────────────────────────
+
+
+def _get_reasoning_style(decision: RoutingDecision, runtime: RuntimeState) -> str:
+    """Return provider reasoning_style or default 'openai'."""
+    provider_cfg = runtime.config.providers.get(decision.provider)
+    if provider_cfg and hasattr(provider_cfg, "reasoning_style"):
+        return provider_cfg.reasoning_style  # type: ignore[attr-defined]
+    return "openai"
+
+
+def _get_reasoning_style_for_provider(provider_name: str, runtime: RuntimeState) -> str:
+    """Return reasoning_style for arbitrary provider name (used in fallback)."""
+    provider_cfg = runtime.config.providers.get(provider_name)
+    if provider_cfg and hasattr(provider_cfg, "reasoning_style"):
+        return provider_cfg.reasoning_style  # type: ignore[attr-defined]
+    return "openai"
+
+
+def _has_explicit_reasoning_control(body: dict[str, Any]) -> bool:
+    """Return True if body already contains any supported reasoning control field."""
+    if "reasoning" in body or "reasoning_effort" in body:
+        return True
+    if "thinking" in body:
+        return True
+    if "enable_thinking" in body:
+        return True
+    oc = body.get("output_config")
+    if isinstance(oc, dict) and "effort" in oc:
+        return True
+    gc = body.get("generationConfig")
+    if isinstance(gc, dict):
+        tc = gc.get("thinkingConfig")
+        if isinstance(tc, dict) and "thinkingBudget" in tc:
+            return True
+    return False
+
+
+def _apply_reasoning_for_style(
+    body: dict[str, Any],
+    style: str,
+    effort: str = "medium",
+) -> dict[str, Any]:
+    """Apply provider-specific reasoning field shape for given style.
+
+    Does not overwrite explicit client-provided reasoning controls.
+    """
+    if style == "none":
+        return body
+    if _has_explicit_reasoning_control(body):
+        return body
+    if style == "openai":
+        body.setdefault("reasoning", {"effort": effort})
+    elif style == "anthropic":
+        oc = body.setdefault("output_config", {})
+        if isinstance(oc, dict):
+            oc.setdefault("effort", effort)
+    elif style == "dashscope":
+        body.setdefault("enable_thinking", True)
+    elif style == "gemini":
+        gc = body.setdefault("generationConfig", {})
+        if isinstance(gc, dict):
+            tc = gc.setdefault("thinkingConfig", {})
+            if isinstance(tc, dict):
+                tc.setdefault("thinkingBudget", 8192)
+    return body
 
 
 # ── Compaction helpers ────────────────────────────────────────────────────────
@@ -1272,6 +1344,12 @@ async def chat_completions(request: Request):
 
         # Replace the model field with the actual model name
         body["model"] = decision.model
+
+        # Inject provider-specific reasoning control for REASONING tier (preserve explicit client controls)
+        if decision.tier == "REASONING":
+            style = _get_reasoning_style(decision, state)
+            body = _apply_reasoning_for_style(body, style)
+
         response = await _try_with_fallbacks(
             body,
             decision,

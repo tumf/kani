@@ -204,6 +204,7 @@ providers:
     name: openrouter
     base_url: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
+    # reasoning_style: openai | anthropic | dashscope | gemini | none (default: openai)
   cliproxy:
     name: cliproxy
     base_url: "http://127.0.0.1:8317/v1"
