@@ -2,7 +2,7 @@
 
 ## Implementation Tasks
 
-- [ ] Add `reasoning_style` to provider configuration in `src/kani/config.py` with allowed values `openai`, `anthropic`, `dashscope`, `gemini`, and `none`, defaulting to `openai`. (verification: unit - config model tests prove default compatibility and invalid value rejection)
+- [x] Add `reasoning_style` to provider configuration in `src/kani/config.py` with allowed values `openai`, `anthropic`, `dashscope`, `gemini`, and `none`, defaulting to `openai`. (verification: unit - config model tests prove default compatibility and invalid value rejection)
 - [ ] Define routed-request reasoning-control injection helpers in `src/kani/proxy.py` that map routing tier and provider `reasoning_style` to provider-specific payload fields. (verification: unit - helper tests cover each style and `REASONING` vs non-`REASONING` tier behavior)
 - [ ] Preserve explicit client reasoning controls by detecting `reasoning`, `reasoning_effort`, `thinking`, `output_config.effort`, `enable_thinking`, and `generationConfig.thinkingConfig.thinkingBudget` before injecting defaults. (verification: unit - tests fail if any explicit field is overwritten)
 - [ ] Wire injection into the routed primary request path after model resolution and before upstream proxying, without changing pass-through requests. (verification: integration - FastAPI client test captures `_try_with_fallbacks` or upstream body and confirms routed injection plus pass-through no-op)
