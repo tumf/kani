@@ -338,6 +338,20 @@ def _kani_headers(
     }
 
 
+def _parse_upstream_json(text: str) -> dict[str, Any]:
+    """Parse JSON, tolerating an erroneous trailing SSE DONE marker."""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        data, idx = json.JSONDecoder().raw_decode(text)
+        trailing = text[idx:].strip()
+        if trailing != "data: [DONE]":
+            raise
+        if not isinstance(data, dict):
+            raise TypeError("Upstream JSON root must be an object")
+        return data
+
+
 def _get_default_provider_info(state: RuntimeState) -> tuple[str, str, str]:
     """Return (base_url, api_key, model) for the default provider."""
     dp_name = state.config.default_provider
@@ -589,7 +603,7 @@ async def _proxy_upstream(
                     "upstream_error",
                 )
             try:
-                resp_data = resp.json()
+                resp_data = _parse_upstream_json(resp.text)
             except Exception:
                 return _openai_error(
                     resp.status_code,

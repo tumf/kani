@@ -448,6 +448,32 @@ class TestSuccessfulFailureHandling:
         assert b"Overloaded" in result.body
 
     @pytest.mark.asyncio
+    async def test_nonstream_trailing_sse_done_marker_is_accepted(self):
+        response = httpx.Response(
+            200,
+            content=b'{"choices":[{"message":{"content":"ok"}}],"usage":{"total_tokens":1}}data: [DONE]\n',
+        )
+
+        async with httpx.AsyncClient() as client:
+            with (
+                patch("kani.proxy._http", client),
+                patch.object(client, "post", return_value=response),
+            ):
+                result = await _proxy_upstream(
+                    "https://primary.example/v1",
+                    "primary-key",
+                    {
+                        "model": "model-primary",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                    None,
+                )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 200
+        assert b'"content":"ok"' in result.body
+
+    @pytest.mark.asyncio
     async def test_streaming_overloaded_first_chunk_becomes_retryable_error(self):
         class FakeStreamingResponse:
             status_code = 200
