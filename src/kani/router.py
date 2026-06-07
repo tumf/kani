@@ -9,7 +9,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from kani.classification_context import ClassificationInput, build_classification_input
-from kani.config import KaniConfig, ProviderConfig, resolve_env
+from kani.compaction import _estimate_tokens
+from kani.config import KaniConfig, ProviderConfig, ResolvedModelCandidate, resolve_env
 from kani.fallback_backoff import FallbackBackoffState
 
 log = logging.getLogger(__name__)
@@ -162,106 +163,133 @@ class Router:
         if profile == "agentic" and agentic_score > 0.6 and tier == "SIMPLE":
             tier = "MEDIUM"
 
-        # --- Look up model in profile tier config with capability filtering ---
+        # --- Look up model in profile tier config with capability/context filtering ---
         resolved_tier, tier_cfg = self._resolve_tier_config(profile_cfg, tier)
-
-        # Try to find capable model in current tier, escalate if needed
-        primary_candidates = tier_cfg.resolve_primary_candidates()
-        capable_candidates = self._filter_capable_candidates(
-            primary_candidates,
-            required_capabilities,
-            tier_provider=tier_cfg.provider,
+        prompt_tokens = _estimate_tokens(messages)
+        log.debug(
+            "Estimated prompt tokens for routing profile=%s tier=%s tokens=%d",
+            profile,
+            resolved_tier,
+            prompt_tokens,
         )
 
-        # If no capable candidates in current tier, escalate to higher tiers
-        if not capable_candidates and required_capabilities:
+        primary_candidates = self._eligible_primary_candidates(
+            tier_cfg,
+            required_capabilities,
+            prompt_tokens=prompt_tokens,
+        )
+
+        # If no eligible primary in current tier, try fallbacks before escalating.
+        fallback_candidates = self._eligible_fallback_candidates(
+            tier_cfg,
+            required_capabilities,
+            prompt_tokens=prompt_tokens,
+        )
+
+        if not primary_candidates and not fallback_candidates:
             current_tier = resolved_tier
             for tier_name in self._escalation_path(profile_cfg, current_tier):
                 escalated_cfg = profile_cfg.tiers.get(tier_name)
                 if escalated_cfg is None:
                     continue
-                escalated_candidates = escalated_cfg.resolve_primary_candidates()
-                capable_candidates = self._filter_capable_candidates(
-                    escalated_candidates,
+                escalated_primary = self._eligible_primary_candidates(
+                    escalated_cfg,
                     required_capabilities,
-                    tier_provider=escalated_cfg.provider,
+                    prompt_tokens=prompt_tokens,
                 )
-                if capable_candidates:
+                escalated_fallbacks = self._eligible_fallback_candidates(
+                    escalated_cfg,
+                    required_capabilities,
+                    prompt_tokens=prompt_tokens,
+                )
+                if escalated_primary or escalated_fallbacks:
                     resolved_tier = tier_name
                     tier_cfg = escalated_cfg
+                    primary_candidates = escalated_primary
+                    fallback_candidates = escalated_fallbacks
                     break
 
-        # If still no capable candidates, raise error
-        if not capable_candidates and required_capabilities:
+        if not primary_candidates and not fallback_candidates and required_capabilities:
             raise CapabilityNotSatisfiedError(required_capabilities)
 
-        selection_candidates = (
-            capable_candidates if required_capabilities else primary_candidates
-        )
         cooled_primary_candidates = self._filter_cooled_candidates(
-            selection_candidates,
-            tier_provider=tier_cfg.provider,
-        )
-
-        fallback_candidates = tier_cfg.resolve_fallbacks()
-        capable_fallbacks = self._filter_capable_candidates(
-            fallback_candidates,
-            required_capabilities,
+            primary_candidates,
             tier_provider=tier_cfg.provider,
         )
         cooled_fallback_candidates = self._filter_cooled_candidates(
-            capable_fallbacks,
+            fallback_candidates,
             tier_provider=tier_cfg.provider,
         )
 
         promoted_from_fallback = False
         if cooled_primary_candidates:
             selection_candidates = cooled_primary_candidates
-        elif selection_candidates and cooled_fallback_candidates:
+        elif fallback_candidates and cooled_fallback_candidates:
             promoted_from_fallback = True
             selection_candidates = cooled_fallback_candidates
             log.warning(
-                "All primary candidates cooling down; promoting fallback candidate profile=%s tier=%s fallback_count=%d",
+                "No available primary candidates; promoting fallback candidate profile=%s tier=%s fallback_count=%d",
                 profile,
                 resolved_tier,
                 len(selection_candidates),
             )
-        elif selection_candidates:
+        elif primary_candidates:
+            selection_candidates = primary_candidates
             log.warning(
-                "All candidates (primary + fallback) cooling down; ignoring cooldown profile=%s tier=%s",
+                "All primary candidates cooling down; ignoring cooldown profile=%s tier=%s",
                 profile,
                 resolved_tier,
             )
+        elif fallback_candidates:
+            promoted_from_fallback = True
+            selection_candidates = fallback_candidates
+            log.warning(
+                "All fallback candidates cooling down; ignoring cooldown profile=%s tier=%s",
+                profile,
+                resolved_tier,
+            )
+        else:
+            selection_candidates = tier_cfg.resolve_primary_candidate_entries()
+            log.warning(
+                "No context-eligible candidates found; falling back to existing upstream handling profile=%s tier=%s prompt_tokens=%d",
+                profile,
+                resolved_tier,
+                prompt_tokens,
+            )
 
         # --- Resolve primary model and provider ---
-        primary_model, primary_provider = self._select_primary_candidate(
+        primary_candidate = self._select_primary_candidate(
             profile,
             resolved_tier,
             tier_cfg,
             filter_to_candidates=selection_candidates,
         )
-        model_id = primary_model
+        model_id = primary_candidate.model
 
         # Resolve provider name: entry override > tier default > config default
-        provider_name = self._resolve_provider_name(primary_provider, tier_cfg.provider)
+        provider_name = self._resolve_provider_name(
+            primary_candidate.provider,
+            tier_cfg.provider,
+        )
 
         provider_cfg = self._lookup_provider(provider_name)
 
         # --- Build fallback entries with capability filtering ---
         fallback_entries: list[FallbackEntry] = []
 
-        for fb_model, fb_provider in capable_fallbacks:
+        for fallback_candidate in fallback_candidates:
             fb_provider_name = self._resolve_provider_name(
-                fb_provider, tier_cfg.provider
+                fallback_candidate.provider,
+                tier_cfg.provider,
             )
             if promoted_from_fallback and (
-                fb_model == model_id and fb_provider_name == provider_name
+                fallback_candidate.model == model_id and fb_provider_name == provider_name
             ):
                 continue
             fb_provider_cfg = self._lookup_provider(fb_provider_name)
             fallback_entries.append(
                 FallbackEntry(
-                    model=fb_model,
+                    model=fallback_candidate.model,
                     provider=fb_provider_name,
                     base_url=fb_provider_cfg.base_url,
                     api_key=resolve_env(fb_provider_cfg.api_key),
@@ -343,12 +371,16 @@ class Router:
 
         resolved_tier, tier_cfg = self._resolve_tier_config(profile_cfg, tier)
 
-        primary_model, primary_provider = self._select_primary_candidate(
+        primary_candidate = self._select_primary_candidate(
             resolved_profile,
             resolved_tier,
             tier_cfg,
         )
-        provider_name = self._resolve_provider_name(primary_provider, tier_cfg.provider)
+        primary_model = primary_candidate.model
+        provider_name = self._resolve_provider_name(
+            primary_candidate.provider,
+            tier_cfg.provider,
+        )
         provider_cfg = self._lookup_provider(provider_name)
 
         fallback_entries: list[FallbackEntry] = []
@@ -411,61 +443,150 @@ class Router:
                 best_capabilities = entry.capabilities
         return set(best_capabilities or [])
 
+    def _eligible_primary_candidates(
+        self,
+        tier_cfg: Any,
+        required_capabilities: set[str],
+        *,
+        prompt_tokens: int,
+    ) -> list[ResolvedModelCandidate]:
+        """Return primary candidates that satisfy capability and context metadata."""
+        candidates = tier_cfg.resolve_primary_candidate_entries()
+        capable_candidates = self._filter_capable_candidates(
+            candidates,
+            required_capabilities,
+            tier_provider=tier_cfg.provider,
+        )
+        return self._filter_context_window_candidates(
+            capable_candidates,
+            prompt_tokens=prompt_tokens,
+            tier_provider=tier_cfg.provider,
+        )
+
+    def _eligible_fallback_candidates(
+        self,
+        tier_cfg: Any,
+        required_capabilities: set[str],
+        *,
+        prompt_tokens: int,
+    ) -> list[ResolvedModelCandidate]:
+        """Return fallback candidates that satisfy capability and context metadata."""
+        candidates = tier_cfg.resolve_fallback_candidate_entries()
+        capable_candidates = self._filter_capable_candidates(
+            candidates,
+            required_capabilities,
+            tier_provider=tier_cfg.provider,
+        )
+        return self._filter_context_window_candidates(
+            capable_candidates,
+            prompt_tokens=prompt_tokens,
+            tier_provider=tier_cfg.provider,
+        )
+
     def _filter_capable_candidates(
         self,
-        candidates: list[tuple[str, str]],
+        candidates: list[ResolvedModelCandidate] | list[tuple[str, str]],
         required_capabilities: set[str],
         *,
         tier_provider: str = "default",
-    ) -> list[tuple[str, str]]:
+    ) -> list[ResolvedModelCandidate]:
         """Filter candidates to those that have all required capabilities.
 
         Args:
-            candidates: List of (model_id, provider_name) tuples.
+            candidates: List of normalized model candidates.
             required_capabilities: Set of required capability strings.
 
         Returns:
             Filtered list of candidates with all required capabilities.
             Returns all candidates if no capabilities are required.
         """
+        normalized_candidates = self._normalize_candidates(candidates)
         if not required_capabilities:
-            return candidates
+            return normalized_candidates
 
         capable = []
-        for model_id, provider_name in candidates:
+        for candidate in normalized_candidates:
             resolved_provider = self._resolve_provider_name(
-                provider_name, tier_provider
+                candidate.provider,
+                tier_provider,
             )
-            model_caps = self._get_model_capabilities(model_id, resolved_provider)
+            model_caps = self._get_model_capabilities(candidate.model, resolved_provider)
             if required_capabilities.issubset(model_caps):
-                capable.append((model_id, provider_name))
+                capable.append(candidate)
 
         return capable
 
+    @staticmethod
+    def _normalize_candidates(
+        candidates: list[ResolvedModelCandidate] | list[tuple[str, str]],
+    ) -> list[ResolvedModelCandidate]:
+        """Normalize legacy tuple candidates for private helper compatibility."""
+        normalized: list[ResolvedModelCandidate] = []
+        for candidate in candidates:
+            if isinstance(candidate, ResolvedModelCandidate):
+                normalized.append(candidate)
+            else:
+                model_id, provider_name = candidate
+                normalized.append(
+                    ResolvedModelCandidate(model=model_id, provider=provider_name)
+                )
+        return normalized
+
+    def _filter_context_window_candidates(
+        self,
+        candidates: list[ResolvedModelCandidate],
+        *,
+        prompt_tokens: int,
+        tier_provider: str,
+    ) -> list[ResolvedModelCandidate]:
+        """Filter out candidates with known insufficient context windows."""
+        eligible: list[ResolvedModelCandidate] = []
+        for candidate in candidates:
+            context_window = candidate.context_window_tokens
+            if context_window is not None and prompt_tokens > context_window:
+                resolved_provider = self._resolve_provider_name(
+                    candidate.provider,
+                    tier_provider,
+                )
+                log.info(
+                    "Skipping context-ineligible candidate model=%s provider=%s prompt_tokens=%d context_window_tokens=%d",
+                    candidate.model,
+                    resolved_provider,
+                    prompt_tokens,
+                    context_window,
+                )
+                continue
+            eligible.append(candidate)
+        return eligible
+
     def _filter_cooled_candidates(
         self,
-        candidates: list[tuple[str, str]],
+        candidates: list[ResolvedModelCandidate],
         *,
         tier_provider: str,
-    ) -> list[tuple[str, str]]:
+    ) -> list[ResolvedModelCandidate]:
         """Filter out model/provider pairs that are currently in cooldown."""
         if not self.fallback_backoff_state.enabled:
             return candidates
 
-        available: list[tuple[str, str]] = []
-        for model_id, entry_provider in candidates:
+        available: list[ResolvedModelCandidate] = []
+        for candidate in candidates:
             resolved_provider = self._resolve_provider_name(
-                entry_provider, tier_provider
+                candidate.provider,
+                tier_provider,
             )
-            if self.fallback_backoff_state.is_in_cooldown(model_id, resolved_provider):
+            if self.fallback_backoff_state.is_in_cooldown(
+                candidate.model,
+                resolved_provider,
+            ):
                 logger = log
                 logger.info(
                     "Skipping cooled candidate during routing model=%s provider=%s",
-                    model_id,
+                    candidate.model,
                     resolved_provider,
                 )
                 continue
-            available.append((model_id, entry_provider))
+            available.append(candidate)
         return available
 
     def _resolve_tier_config(self, profile_cfg: Any, tier: str) -> tuple[str, Any]:
@@ -503,8 +624,8 @@ class Router:
         profile: str,
         tier: str,
         tier_cfg: Any,
-        filter_to_candidates: list[tuple[str, str]] | None = None,
-    ) -> tuple[str, str]:
+        filter_to_candidates: list[ResolvedModelCandidate] | None = None,
+    ) -> ResolvedModelCandidate:
         """Select a primary candidate via per profile+tier round-robin.
 
         Args:
@@ -515,12 +636,12 @@ class Router:
                                  Otherwise use all primary candidates.
 
         Returns:
-            Selected (model_id, provider_name) tuple.
+            Selected normalized model candidate.
         """
         if filter_to_candidates is not None:
             candidates = filter_to_candidates
         else:
-            candidates = tier_cfg.resolve_primary_candidates()
+            candidates = tier_cfg.resolve_primary_candidate_entries()
 
         if len(candidates) == 1:
             return candidates[0]
@@ -538,8 +659,8 @@ class Router:
             tier,
             selected_idx,
             len(candidates),
-            selected[0],
-            selected[1] or "",
+            selected.model,
+            selected.provider or "",
         )
         return selected
 

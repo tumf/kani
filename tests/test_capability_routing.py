@@ -200,7 +200,7 @@ class TestCapabilityFiltering:
 
         # gpt-4o-mini has vision, claude-haiku doesn't
         assert len(capable) == 1
-        assert capable[0][0] == "gpt-4o-mini"
+        assert capable[0].model == "gpt-4o-mini"
 
     def test_filter_capable_candidates_with_tools(self) -> None:
         """Both models should have tools capability."""
@@ -223,7 +223,7 @@ class TestCapabilityFiltering:
 
         # Only gpt-4o-mini has both vision and tools
         assert len(capable) == 1
-        assert capable[0][0] == "gpt-4o-mini"
+        assert capable[0].model == "gpt-4o-mini"
 
     def test_no_filter_when_no_capabilities_required(self) -> None:
         """All candidates should pass when no capabilities are required."""
