@@ -1,6 +1,6 @@
 ## MODIFIED Requirements
 
-### Requirement: Context-window-aware candidate selection
+### Requirement: Input-limit-aware candidate selection
 
 Routing MUST avoid selecting model candidates whose configured input-token limit is smaller than the estimated request prompt tokens. The input-limit filter is authoritative for candidates that declare a limit: once a known-over-limit candidate is filtered out, routing MUST NOT reintroduce that candidate through a final default or upstream fallback path.
 
