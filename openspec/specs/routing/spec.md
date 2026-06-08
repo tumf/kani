@@ -384,3 +384,10 @@ Routing MUST avoid selecting model candidates whose configured input-token limit
 **And**: one fitted candidate is in fallback-backoff cooldown
 **When**: routing selects a model for the request
 **Then**: kani MUST skip the cooled candidate when another fitted candidate is available
+
+#### Scenario: Smart-proxy compaction context_window_tokens remains separate
+
+**Given**: `smart_proxy.context_compaction.context_window_tokens` is configured
+**When**: routing model candidate eligibility is evaluated
+**Then**: that compaction setting MUST NOT be treated as per-model `max_input_tokens`
+**And**: this change MUST NOT rename or alter smart-proxy compaction threshold semantics

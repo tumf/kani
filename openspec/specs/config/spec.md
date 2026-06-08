@@ -139,12 +139,26 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 - THEN システムは従来通りその候補を受理する
 - AND input limit は未指定として扱う
 
+#### Scenario: max_input_tokens 未指定のオブジェクトエントリ
+
+- GIVEN tier 設定の `primary` または `fallback` に `{model, provider}` オブジェクトがある
+- WHEN 設定を読み込む
+- THEN システムは従来通りその候補を受理する
+- AND input limit は未指定として扱う
+
 #### Scenario: legacy context_window_tokens is not silently ignored
 
 - GIVEN tier 設定のモデルエントリに legacy `context_window_tokens` が含まれる
 - WHEN 設定を読み込む
-- THEN システムはその設定を不正として拒否する
+- THEN システムはその値を `max_input_tokens` として扱い deprecation warning を出す、または設定を不正として拒否する
 - AND legacy フィールドを silently ignore してはならない
+
+#### Scenario: smart-proxy compaction context_window_tokens remains separate
+
+- GIVEN `smart_proxy.context_compaction.context_window_tokens` が設定されている
+- WHEN 設定を読み込む
+- THEN システムはこの compaction 設定を従来通り受理する
+- AND この値を per-model `max_input_tokens` として扱ってはならない
 
 ### Requirement: オーバーライド
 
