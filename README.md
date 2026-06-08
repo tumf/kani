@@ -218,11 +218,15 @@ profiles:
         primary: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
         fallback: ["nvidia/gpt-oss-120b"]
       MEDIUM:
-        primary: "moonshotai/kimi-k2.5"
+        primary:
+          model: "moonshotai/kimi-k2.5"
+          max_input_tokens: 128000
         fallback: null  # allowed; normalized to []
       COMPLEX:
         primary: "google/gemini-3.1-pro"
-        fallback: ["anthropic/claude-sonnet-4.6"]
+        fallback:
+          - model: "anthropic/claude-sonnet-4.6"
+            max_input_tokens: 200000
       REASONING:
         primary: "x-ai/grok-4-1-fast-reasoning"
         fallback: ["anthropic/claude-sonnet-4.6"]
@@ -239,7 +243,9 @@ smart_proxy:
 
 - `${VAR}` syntax resolves environment variables
 - Each tier can specify its own `provider` or inherit `default_provider`
-- `primary` accepts a string, `{model, provider}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
+- `primary` accepts a string, `{model, provider, max_input_tokens}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
+- `fallback` accepts the same string/object entries as `primary`; object entries can set `max_input_tokens` so candidates with a known input limit lower than the estimated prompt tokens are skipped
+- Candidates without `max_input_tokens` remain eligible because their input limit is unknown
 - `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
 - When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
 - `smart_proxy.fallback_backoff` enables process-local exponential cooldowns for retryable non-streaming `429` / `5xx` failures, keyed by `model+provider`

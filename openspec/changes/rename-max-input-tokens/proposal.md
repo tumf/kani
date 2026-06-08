@@ -59,7 +59,7 @@ Legacy routing metadata must not be silently ignored. The implementation must ei
 - `src/kani/config.py` either rejects legacy model-entry `context_window_tokens` with a clear validation error or maps it to `max_input_tokens` with a deprecation warning; tests prove the chosen behavior.
 - `src/kani/router.py` uses `max_input_tokens` names in helper names, variables, comments, and logs while preserving the input-token comparison behavior.
 - `tests/test_context_window_routing.py` or its renamed equivalent verifies config parsing, primary skipping, unknown limit eligibility, fallback promotion, tier escalation, capability filtering, and cooldown ordering with `max_input_tokens`.
-- `config.yaml`, `config.example.yaml`, README, and OpenSpec canonical specs are updated to use `max_input_tokens` for routing model metadata while retaining smart-proxy compaction `context_window_tokens` references.
+- `config.example.yaml`, README, and OpenSpec canonical specs are updated to use `max_input_tokens` for routing model metadata while retaining smart-proxy compaction `context_window_tokens` references; repository-local `config.yaml` is gitignored and only applicable when present in an operator workspace.
 - Focused routing/config tests and broad quality checks pass.
 
 ## Out of Scope
