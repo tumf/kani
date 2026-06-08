@@ -1,12 +1,10 @@
 ---
 change_type: implementation
 priority: medium
-dependencies:
-  - rename-max-input-tokens
 references:
   - src/kani/router.py
   - tests/test_context_window_routing.py
-  - openspec/changes/rename-max-input-tokens
+  - openspec/changes/archive/2026-06-09-rename-max-input-tokens
   - openspec/specs/routing/spec.md
 ---
 
