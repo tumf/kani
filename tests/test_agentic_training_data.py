@@ -70,8 +70,32 @@ def test_semantic_dimension_calibration_text_includes_representative_guidance() 
     assert "autonomous implementation" in text
 
 
+def test_llm_feature_annotator_calibration_is_lazy(monkeypatch) -> None:
+    calls = 0
+
+    def _calibration_text() -> str:
+        nonlocal calls
+        calls += 1
+        raise ValueError("calibration drift")
+
+    monkeypatch.setattr(
+        "kani.training_data._semantic_dimension_calibration_text", _calibration_text
+    )
+
+    LLMFeatureAnnotator(api_key="test-key")
+
+    assert calls == 0
+    try:
+        LLMFeatureAnnotator._build_prompt("Fix the test")
+    except ValueError as exc:
+        assert "calibration drift" in str(exc)
+    else:
+        raise AssertionError("expected calibration failure during prompt construction")
+    assert calls == 1
+
+
 def test_llm_feature_annotator_prompt_includes_calibration_and_json_contract() -> None:
-    prompt = LLMFeatureAnnotator._PROMPT_TEMPLATE.format(prompt="Fix the test")
+    prompt = LLMFeatureAnnotator._build_prompt("Fix the test")
 
     assert "Return JSON object only with exactly these keys:" in prompt
     assert "Each value must be one of: low, medium, high" in prompt
@@ -186,7 +210,7 @@ def test_build_feature_dataset_persists_examples(tmp_path: Path) -> None:
     assert persisted == examples
 
 
-def test_llm_feature_annotator_accepts_valid_labels_and_ignores_extra_json_keys(
+def test_llm_feature_annotator_rejects_extra_json_keys(
     monkeypatch,
 ) -> None:
     class _Response:
@@ -215,7 +239,7 @@ def test_llm_feature_annotator_accepts_valid_labels_and_ignores_extra_json_keys(
 
     labels = LLMFeatureAnnotator(api_key="test-key").annotate("Implement feature")
 
-    assert labels == _labels("high")
+    assert labels is None
 
 
 def test_llm_feature_annotator_rejects_missing_or_invalid_labels(monkeypatch) -> None:
@@ -335,16 +359,26 @@ def test_llm_feature_annotator_bounds_prompt_at_runtime_classification_default(
     assert sent_prompt == prompt[:ANNOTATION_PROMPT_MAX_CHARS]
 
 
-def test_llm_feature_annotator_does_not_truncate_prompt_at_2000(
+def test_llm_feature_annotator_does_not_truncate_varied_prompt_at_2000(
     monkeypatch,
 ) -> None:
-    prompt = "a" * 2000 + "b" * 100
+    sections = [
+        "System context: route requests between small and reasoning models.\n",
+        "User story: an operator asks for calibration, verification, and examples.\n",
+        "Code excerpt: def choose_model(prompt: str) -> str: return 'auto'\n",
+        "Japanese note: これは長い分類入力が保持されることを確認するための現実的な文です。\n",
+        "Constraints: preserve JSON keys, fail fast on schema drift, keep audit logs.\n",
+    ]
+    prompt = "".join(sections[index % len(sections)] for index in range(45))
+    assert len(prompt) > 2000
+    sentinel = "AFTER_2000_SENTINEL: retain this calibration-relevant tail."
+    prompt = f"{prompt[:2000]}{sentinel}{prompt[2000:]}"
 
     sent_prompt = _capture_annotation_prompt(monkeypatch, prompt)
 
     assert len(sent_prompt) == len(prompt)
     assert sent_prompt == prompt
-    assert sent_prompt[2000:] == "b" * 100
+    assert sentinel in sent_prompt[2000:]
 
 
 def test_checkpoint_resumes_and_skips_already_annotated(tmp_path: Path) -> None:

@@ -149,15 +149,23 @@ class DistilledFeatureExample(TypedDict):
 class LLMFeatureAnnotator:
     """Offline annotator that labels semantic dimensions with an LLM."""
 
-    _PROMPT_TEMPLATE = (
-        "You are labeling prompts for routing distillation. "
-        "Return JSON object only with exactly these keys: "
-        f"{', '.join(SEMANTIC_DIMENSIONS)}. "
-        "Each value must be one of: low, medium, high. "
-        "Do not include any explanation or markdown.\n\n"
-        f"{_semantic_dimension_calibration_text()}\n\n"
-        "Prompt:\n{prompt}"
-    )
+    @staticmethod
+    def _prompt_template() -> str:
+        return (
+            "You are labeling prompts for routing distillation. "
+            "Return JSON object only with exactly these keys: "
+            f"{', '.join(SEMANTIC_DIMENSIONS)}. "
+            "Each value must be one of: low, medium, high. "
+            "Do not include any explanation or markdown.\n\n"
+            f"{_semantic_dimension_calibration_text()}\n\n"
+            "Prompt:\n{prompt}"
+        )
+
+    @classmethod
+    def _build_prompt(cls, prompt: str) -> str:
+        return cls._prompt_template().format(
+            prompt=prompt[:ANNOTATION_PROMPT_MAX_CHARS]
+        )
 
     def __init__(
         self,
@@ -212,9 +220,7 @@ class LLMFeatureAnnotator:
                     "messages": [
                         {
                             "role": "user",
-                            "content": self._PROMPT_TEMPLATE.format(
-                                prompt=prompt[:ANNOTATION_PROMPT_MAX_CHARS]
-                            ),
+                            "content": self._build_prompt(prompt),
                         }
                     ],
                     "temperature": 0.0,
@@ -242,9 +248,14 @@ class LLMFeatureAnnotator:
         if not isinstance(parsed, dict):
             return None
 
+        expected_keys = set(SEMANTIC_DIMENSIONS)
+        parsed_keys = set(parsed)
+        if parsed_keys != expected_keys:
+            return None
+
         labels: dict[str, str] = {}
         for dim in SEMANTIC_DIMENSIONS:
-            value = str(parsed.get(dim, "")).strip().lower()
+            value = str(parsed[dim]).strip().lower()
             if value not in VALID_DIMENSION_LABELS:
                 return None
             labels[dim] = value
