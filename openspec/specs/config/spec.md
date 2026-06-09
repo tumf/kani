@@ -272,19 +272,10 @@ LLM 分類器の設定はオプショナルで、API キーは複数のソース
 
 ### Requirement: Model metadata documentation
 
-The configuration specification and user-facing documentation MUST identify `model_rules` as the primary model metadata mechanism and describe `model_capabilities` as a legacy compatibility alias.
+`model_rules` is the primary configuration surface for prefix-based model metadata. The `supports_reasoning_content` field in each entry uses the same prefix/provider scoring precedence as `reasoning_style`: provider-matching rules always take priority over provider-agnostic rules, even when the provider-agnostic rule has a longer prefix.
 
-#### Scenario: Primary model metadata field is documented
+#### Scenario: Model rule precedence is documented
 
-**Given** an operator reads kani configuration documentation
-**When** the documentation describes model capabilities, reasoning metadata, or model rule prefix matching
-**Then** it MUST present `model_rules` as the primary configuration field
-**And** it MUST state that legacy `model_capabilities` is normalized into `model_rules` only when `model_rules` is unset
-**And** it MUST state that configuring both `model_rules` and `model_capabilities` is invalid
-
-#### Scenario: Missing metadata behavior is documented
-
-**Given** no model metadata rules are configured
-**When** a request requires detected capabilities such as tools, vision, or JSON mode
-**Then** documentation MUST state that capability filtering fails closed because no configured candidate declares the required capability set
-**And** documentation MUST state that operators need matching `model_rules` metadata for capability-required requests to route successfully
+**Given** an operator reads `model_rules` documentation or the relevant function docstring
+**When** kani resolves `supports_reasoning_content`
+**Then** the precedence (provider-match > prefix length) is clearly described so the operator can configure rules with confidence
