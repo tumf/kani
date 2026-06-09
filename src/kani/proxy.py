@@ -918,7 +918,12 @@ def _get_reasoning_style_for_candidate(
 def _get_model_reasoning_content_support(
     model: str, provider_name: str, runtime: RuntimeState
 ) -> bool | None:
-    """Return model-specific reasoning_content support using prefix/provider matching."""
+    """Return model-specific reasoning_content support using prefix/provider matching.
+
+    Provider-matching rules outrank provider-agnostic rules before prefix
+    specificity is considered. For example, a provider-specific wildcard rule
+    beats a longer provider-agnostic prefix rule for the same model.
+    """
     best_support: bool | None = None
     best_score: tuple[int, int] = (-1, -1)
     for entry in runtime.config.model_rules:
@@ -947,7 +952,14 @@ def _supports_reasoning_content(
     if model_support is not None:
         return model_support
     provider_cfg = runtime.config.providers.get(provider_name)
-    return bool(provider_cfg and provider_cfg.supports_reasoning_content)
+    if provider_cfg is None:
+        logger.warning(
+            "Unknown provider for reasoning_content support fallback model=%s provider=%s",
+            model,
+            provider_name,
+        )
+        return False
+    return bool(provider_cfg.supports_reasoning_content)
 
 
 def _sanitize_reasoning_content_for_candidate(
@@ -965,13 +977,11 @@ def _sanitize_reasoning_content_for_candidate(
     sanitized_messages: list[Any] = []
     removed_count = 0
     for msg in messages:
-        if isinstance(msg, dict) and "reasoning_content" in msg:
-            sanitized_msg = dict(msg)
+        sanitized_msg = copy.deepcopy(msg)
+        if isinstance(sanitized_msg, dict) and "reasoning_content" in sanitized_msg:
             sanitized_msg.pop("reasoning_content", None)
-            sanitized_messages.append(sanitized_msg)
             removed_count += 1
-        else:
-            sanitized_messages.append(msg)
+        sanitized_messages.append(sanitized_msg)
 
     if removed_count == 0:
         return body
