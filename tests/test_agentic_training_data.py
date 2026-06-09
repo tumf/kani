@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kani.scorer import SEMANTIC_DIMENSIONS
 from kani.training_data import (
     LLMFeatureAnnotator,
+    SEMANTIC_DIMENSION_CALIBRATION,
     _classification_prompt_from_record,
+    _semantic_dimension_calibration_text,
     build_feature_dataset,
     deterministic_token_count,
     extract_distilled_feature_examples,
@@ -44,6 +47,39 @@ def _labels(agentic: str = "medium") -> dict[str, str]:
 def test_deterministic_token_count() -> None:
     assert deterministic_token_count("hello world") == 2
     assert deterministic_token_count("") == 1
+
+
+def test_semantic_dimension_calibration_covers_every_dimension() -> None:
+    assert set(SEMANTIC_DIMENSION_CALIBRATION) == set(SEMANTIC_DIMENSIONS)
+    for dim in SEMANTIC_DIMENSIONS:
+        labels = SEMANTIC_DIMENSION_CALIBRATION[dim]
+        assert set(labels) == {"low", "medium", "high"}
+        assert all(labels[label].strip() for label in ("low", "medium", "high"))
+
+
+def test_semantic_dimension_calibration_text_includes_representative_guidance() -> None:
+    text = _semantic_dimension_calibration_text()
+
+    assert "- codePresence:" in text
+    assert "Contains code blocks" in text
+    assert "- reasoningMarkers:" in text
+    assert "root-cause analysis" in text
+    assert "- agenticTask:" in text
+    assert "autonomous implementation" in text
+
+
+def test_llm_feature_annotator_prompt_includes_calibration_and_json_contract() -> None:
+    prompt = LLMFeatureAnnotator._PROMPT_TEMPLATE.format(prompt="Fix the test")
+
+    assert "Return JSON object only with exactly these keys:" in prompt
+    assert "Each value must be one of: low, medium, high" in prompt
+    assert "Do not include any explanation or markdown" in prompt
+    assert "Fix the test" in prompt
+    for dim in SEMANTIC_DIMENSIONS:
+        assert dim in prompt
+    assert "- codePresence:" in prompt
+    assert "- reasoningMarkers:" in prompt
+    assert "- agenticTask:" in prompt
 
 
 def test_extract_distilled_feature_examples_prefers_log_labels_and_dedupes() -> None:
@@ -143,6 +179,67 @@ def test_build_feature_dataset_persists_examples(tmp_path: Path) -> None:
     assert len(examples) == 1
     persisted = json.loads(output_path.read_text(encoding="utf-8"))
     assert persisted == examples
+
+
+def test_llm_feature_annotator_accepts_valid_labels_and_ignores_extra_json_keys(
+    monkeypatch,
+) -> None:
+    class _Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {**_labels("high"), "extra": "ignored"}
+                            )
+                        }
+                    }
+                ]
+            }
+
+    def _post(*args, **kwargs):
+        return _Response()
+
+    monkeypatch.setattr("kani.training_data.httpx.post", _post)
+
+    labels = LLMFeatureAnnotator(api_key="test-key").annotate("Implement feature")
+
+    assert labels == _labels("high")
+
+
+def test_llm_feature_annotator_rejects_missing_or_invalid_labels(monkeypatch) -> None:
+    responses = iter(
+        [
+            json.dumps(
+                {key: value for key, value in _labels().items() if key != "agenticTask"}
+            ),
+            json.dumps({**_labels(), "agenticTask": "extreme"}),
+        ]
+    )
+
+    class _Response:
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict[str, object]:
+            return {"choices": [{"message": {"content": next(responses)}}]}
+
+    def _post(*args, **kwargs):
+        return _Response()
+
+    monkeypatch.setattr("kani.training_data.httpx.post", _post)
+    annotator = LLMFeatureAnnotator(api_key="test-key")
+
+    assert annotator.annotate("Implement feature") is None
+    assert annotator.annotate("Implement feature") is None
 
 
 def test_llm_feature_annotator_uses_provider_resolved_config_defaults(

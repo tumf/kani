@@ -17,6 +17,105 @@ from kani.scorer import SEMANTIC_DIMENSIONS
 
 VALID_DIMENSION_LABELS = {"low", "medium", "high"}
 
+SEMANTIC_DIMENSION_CALIBRATION: dict[str, dict[str, str]] = {
+    "codePresence": {
+        "low": "No code, stack traces, commands, or implementation-specific syntax.",
+        "medium": "Mentions code, tools, commands, errors, or files without requiring code-heavy work.",
+        "high": "Contains code blocks, tracebacks, concrete implementation details, or asks to write/debug code.",
+    },
+    "reasoningMarkers": {
+        "low": "No explicit request to explain, compare, prove, analyze, or find causes.",
+        "medium": "Asks for an explanation, comparison, or analysis with limited depth.",
+        "high": "Requires deep reasoning such as proof, root-cause analysis, trade-off analysis, or multi-factor diagnosis.",
+    },
+    "technicalTerms": {
+        "low": "Uses general language with little or no software, API, config, or infrastructure terminology.",
+        "medium": "Includes a few technical terms or one concrete tool/API/configuration topic.",
+        "high": "Dense technical vocabulary across APIs, frameworks, configs, infrastructure, or ML/routing concepts.",
+    },
+    "creativeMarkers": {
+        "low": "No request to draft, design, write creative copy, or generate narrative content.",
+        "medium": "Asks for a short draft, wording, design idea, or light creative transformation.",
+        "high": "Requires substantial creative generation, brand/design direction, story, copy, or stylistic iteration.",
+    },
+    "simpleIndicators": {
+        "low": "Not a short greeting, acknowledgement, yes/no answer, or trivial conversational turn.",
+        "medium": "Mostly simple but includes a small concrete request or context.",
+        "high": "A very short greeting, acknowledgement, thanks, confirmation, or simple yes/no-style prompt.",
+    },
+    "multiStepPatterns": {
+        "low": "Single-step request with no ordered sequence or dependency between actions.",
+        "medium": "Two or more implied steps, a short procedure, or one follow-up dependency.",
+        "high": "Explicit multi-stage workflow with ordered steps, verification, iteration, or coordination.",
+    },
+    "questionComplexity": {
+        "low": "No question or a direct factual/simple question.",
+        "medium": "One substantive question or a question needing some context synthesis.",
+        "high": "Multiple questions, conditional questions, or a broad inquiry requiring structured reasoning.",
+    },
+    "imperativeVerbs": {
+        "low": "No action command or only passive information-seeking wording.",
+        "medium": "One clear action verb such as add, update, check, run, summarize, or explain.",
+        "high": "Multiple action commands or direct instructions to implement, fix, test, investigate, and verify.",
+    },
+    "constraintCount": {
+        "low": "No explicit constraints, prohibitions, required formats, or must/never conditions.",
+        "medium": "One or two constraints such as required output, scope, or forbidden behavior.",
+        "high": "Several strict constraints, acceptance criteria, forbidden actions, or compliance requirements.",
+    },
+    "outputFormat": {
+        "low": "No requested structure or format.",
+        "medium": "Requests a common format such as JSON, markdown, table, list, or concise bullets.",
+        "high": "Requires an exact schema, machine-readable shape, strict keys, or multiple formatting rules.",
+    },
+    "referenceComplexity": {
+        "low": "No external references, file paths, URLs, logs, or prior artifacts.",
+        "medium": "One or two references such as a URL, file path, issue, config, or log snippet.",
+        "high": "Several references or requires cross-reading files, URLs, logs, specs, or previous context.",
+    },
+    "negationComplexity": {
+        "low": "No negation, exception, or forbidden behavior.",
+        "medium": "One explicit not/without/never condition or simple exception.",
+        "high": "Multiple prohibitions, nuanced exceptions, or safety constraints that affect execution.",
+    },
+    "domainSpecificity": {
+        "low": "General-purpose request that does not depend on a specialized domain.",
+        "medium": "Depends on one recognizable domain such as Python, CLI routing, config, or testing.",
+        "high": "Requires specialized project/domain knowledge across routing, providers, proxy behavior, or ML features.",
+    },
+    "agenticTask": {
+        "low": "Only asks for an answer or explanation; no tool use, repository change, or verification expected.",
+        "medium": "Asks the assistant to perform a bounded action such as inspect, run, update, or produce an artifact.",
+        "high": "Requires autonomous implementation, debugging, multi-step tool use, verification, or repository modification.",
+    },
+}
+
+
+def _semantic_dimension_calibration_text() -> str:
+    missing = set(SEMANTIC_DIMENSIONS) - set(SEMANTIC_DIMENSION_CALIBRATION)
+    extra = set(SEMANTIC_DIMENSION_CALIBRATION) - set(SEMANTIC_DIMENSIONS)
+    if missing or extra:
+        raise ValueError(
+            "Semantic dimension calibration must exactly match SEMANTIC_DIMENSIONS; "
+            f"missing={sorted(missing)} extra={sorted(extra)}"
+        )
+
+    lines = ["Calibration guidance:"]
+    for dim in SEMANTIC_DIMENSIONS:
+        labels = SEMANTIC_DIMENSION_CALIBRATION[dim]
+        invalid_labels = set(labels) - VALID_DIMENSION_LABELS
+        missing_labels = VALID_DIMENSION_LABELS - set(labels)
+        if invalid_labels or missing_labels:
+            raise ValueError(
+                "Semantic dimension calibration labels must be low, medium, high; "
+                f"dimension={dim} missing={sorted(missing_labels)} "
+                f"invalid={sorted(invalid_labels)}"
+            )
+        lines.append(f"- {dim}:")
+        for label in ("low", "medium", "high"):
+            lines.append(f"  - {label}: {labels[label]}")
+    return "\n".join(lines)
+
 
 class FeatureAnnotator(Protocol):
     def annotate(self, prompt: str) -> dict[str, str] | None: ...
@@ -50,7 +149,9 @@ class LLMFeatureAnnotator:
         "You are labeling prompts for routing distillation. "
         "Return JSON object only with exactly these keys: "
         f"{', '.join(SEMANTIC_DIMENSIONS)}. "
-        "Each value must be one of: low, medium, high.\n\n"
+        "Each value must be one of: low, medium, high. "
+        "Do not include any explanation or markdown.\n\n"
+        f"{_semantic_dimension_calibration_text()}\n\n"
         "Prompt:\n{prompt}"
     )
 
