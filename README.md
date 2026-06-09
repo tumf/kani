@@ -276,7 +276,7 @@ smart_proxy:
       threshold_percent: 80.0            # compact when prompt ≥ 80% of context window
       protect_first_n: 1                 # turns to keep at head of conversation
       protect_last_n: 2                  # turns to keep at tail
-      summary_model: ""                  # empty = use 'compress' profile primary model
+      summary_profile: ""                # empty = resolve through default_profile
 
     background_precompaction:
       enabled: true                      # Phase B: pre-compute summaries async
@@ -290,7 +290,7 @@ smart_proxy:
     context_window_tokens: 128000        # assumed context window for threshold math
 ```
 
-A `compress` routing profile (see `config.example.yaml`) is used as the default summarisation model when `summary_model` is empty.
+Summary generation is selected by routing profile. Set `summary_profile` to a profile such as `compress` to route summaries through that profile; leave it empty to fall back to `default_profile` via the router's normal model resolution.
 
 ### Session identity
 
