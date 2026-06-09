@@ -257,6 +257,7 @@ class TestReasoningContentCompatibility:
         assert supported is False
         assert "Unknown provider for reasoning_content support fallback" in caplog.text
         assert "missing-provider" in caplog.text
+        assert "unknown-model" in caplog.text
 
     def test_sanitizer_deep_copies_messages(self):
         cfg = KaniConfig(
