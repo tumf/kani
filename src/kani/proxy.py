@@ -973,19 +973,22 @@ def _sanitize_reasoning_content_for_candidate(
     if not isinstance(messages, list):
         return body
 
-    sanitized_body = dict(body)
-    sanitized_messages: list[Any] = []
-    removed_count = 0
-    for msg in messages:
-        sanitized_msg = copy.deepcopy(msg)
-        if isinstance(sanitized_msg, dict) and "reasoning_content" in sanitized_msg:
-            sanitized_msg.pop("reasoning_content", None)
-            removed_count += 1
-        sanitized_messages.append(sanitized_msg)
-
-    if removed_count == 0:
+    affected_indexes = [
+        idx
+        for idx, msg in enumerate(messages)
+        if isinstance(msg, dict) and "reasoning_content" in msg
+    ]
+    if not affected_indexes:
         return body
 
+    sanitized_body = dict(body)
+    sanitized_messages = list(messages)
+    for idx in affected_indexes:
+        sanitized_msg = dict(messages[idx])
+        sanitized_msg.pop("reasoning_content")
+        sanitized_messages[idx] = sanitized_msg
+
+    removed_count = len(affected_indexes)
     sanitized_body["messages"] = sanitized_messages
     logger.debug(
         "REASONING_CONTENT sanitized model=%s provider=%s removed_messages=%d",

@@ -200,12 +200,16 @@ class TestReasoningContentCompatibility:
             is False
         )
 
-    def test_scoring_precedence_wildcard_provider_beats_specific_prefix(self):
+    def test_provider_specific_wildcard_beats_specific_prefix(self):
         cfg = KaniConfig(
             providers={
                 "dummy": ProviderConfig(
                     name="dummy",
                     base_url="http://dummy.example",
+                ),
+                "other": ProviderConfig(
+                    name="other",
+                    base_url="http://other.example",
                 ),
             },
             model_rules=[
@@ -235,10 +239,12 @@ class TestReasoningContentCompatibility:
             )
             is False
         )
-        docstring = proxy_mod._get_model_reasoning_content_support.__doc__ or ""
-        assert "Provider-matching rules outrank provider-agnostic rules" in docstring
-        assert "before prefix" in docstring
-        assert "provider-specific wildcard rule" in docstring
+        assert (
+            proxy_mod._get_model_reasoning_content_support(
+                "sonnet-4-20250514", "other", state
+            )
+            is True
+        )
 
     def test_unknown_provider_logs_warning(self, caplog: pytest.LogCaptureFixture):
         cfg = KaniConfig(
@@ -275,7 +281,42 @@ class TestReasoningContentCompatibility:
         assert "missing-provider" in caplog.text
         assert "unknown-model" in caplog.text
 
-    def test_sanitizer_deep_copies_messages(self):
+    def test_sanitizer_returns_original_body_when_no_reasoning_content(self):
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://dummy.example",
+                ),
+            }
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+        body: dict[str, Any] = {
+            "model": "plain-model",
+            "messages": [
+                {"role": "assistant", "content": {"parts": ["answer"]}},
+                {"role": "user", "content": {"parts": ["hello"]}},
+            ],
+        }
+
+        with pytest.MonkeyPatch.context() as mp:
+            deepcopy = MagicMock()
+            mp.setattr(proxy_mod.copy, "deepcopy", deepcopy)
+            sanitized = proxy_mod._sanitize_reasoning_content_for_candidate(
+                body, "plain-model", "dummy", state
+            )
+
+        assert sanitized is body
+        assert deepcopy.call_count == 0
+
+    def test_sanitizer_shallow_copies_only_messages_with_reasoning_content(self):
         cfg = KaniConfig(
             providers={
                 "dummy": ProviderConfig(
@@ -304,15 +345,20 @@ class TestReasoningContentCompatibility:
             ],
         }
 
-        sanitized = proxy_mod._sanitize_reasoning_content_for_candidate(
-            body, "plain-model", "dummy", state
-        )
-        sanitized["messages"][0]["content"]["parts"].append("mutated")
-        sanitized["messages"][1]["content"]["parts"].append("mutated")
+        with pytest.MonkeyPatch.context() as mp:
+            deepcopy = MagicMock()
+            mp.setattr(proxy_mod.copy, "deepcopy", deepcopy)
+            sanitized = proxy_mod._sanitize_reasoning_content_for_candidate(
+                body, "plain-model", "dummy", state
+            )
 
+        assert sanitized is not body
+        assert sanitized["messages"] is not body["messages"]
+        assert sanitized["messages"][0] is not body["messages"][0]
+        assert sanitized["messages"][1] is body["messages"][1]
         assert "reasoning_content" not in sanitized["messages"][0]
-        assert body["messages"][0]["content"]["parts"] == ["answer"]
-        assert body["messages"][1]["content"]["parts"] == ["hello"]
+        assert body["messages"][0]["reasoning_content"] == "private chain"
+        assert deepcopy.call_count == 0
 
     def test_config_text_accepts_optional_fragments_without_trailing_newline(
         self, tmp_path: Path
