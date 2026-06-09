@@ -7,7 +7,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from kani.cli import main
+from kani.cli import _mask_keys_in_decision, main
 from kani.config import (
     ConfigIncompleteError,
     ConfigNotFoundError,
@@ -30,6 +30,68 @@ def empty_dir(tmp_path, monkeypatch):
     # Also override XDG so it doesn't find real user config
     monkeypatch.setenv("KANI_CONFIG_DIR", str(tmp_path / "xdg_config"))
     return tmp_path
+
+
+class TestRouteKeyMasking:
+    def test_mask_keys_in_decision_masks_nested_api_keys(self) -> None:
+        decision = {
+            "model": "primary-model",
+            "api_key": "top-level-secret",
+            "fallbacks": [
+                {"model": "fallback-model", "api_key": "fallback-secret"},
+                {"model": "unset-model", "api_key": ""},
+            ],
+            "metadata": {"api_key": "nested-secret"},
+        }
+
+        masked = _mask_keys_in_decision(decision)
+
+        assert masked["api_key"] == "***"
+        assert masked["fallbacks"][0]["api_key"] == "***"
+        assert masked["fallbacks"][1]["api_key"] == ""
+        assert masked["metadata"]["api_key"] == "***"
+
+    def test_route_masks_api_key_output(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: primary
+providers:
+  primary:
+    name: primary
+    base_url: https://primary.example/v1
+    api_key: route-top-level-secret
+  fallback:
+    name: fallback
+    base_url: https://fallback.example/v1
+    api_key: route-fallback-secret
+  unset:
+    name: unset
+    base_url: https://unset.example/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary:
+          model: primary-model
+          provider: primary
+        fallback:
+          - model: fallback-model
+            provider: fallback
+          - model: unset-model
+            provider: unset
+"""
+        )
+
+        result = runner.invoke(main, ["route", "hello", "--config", str(config_path)])
+
+        assert result.exit_code == 0, result.output
+        assert "route-top-level-secret" not in result.output
+        assert "route-fallback-secret" not in result.output
+        data = json.loads(result.output)
+        assert data["api_key"] == "***"
+        assert data["fallbacks"][0]["api_key"] == "***"
+        assert data["fallbacks"][1]["api_key"] == ""
 
 
 class TestConfigErrors:

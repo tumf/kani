@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import textwrap
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 
@@ -16,6 +16,20 @@ def _handle_config_error(e: ConfigNotFoundError | ConfigIncompleteError) -> NoRe
     """Print a user-friendly config error and exit."""
     click.echo(f"Error: {e}", err=True)
     raise SystemExit(1)
+
+
+def _mask_keys_in_decision(value: Any) -> Any:
+    """Mask non-empty api_key values in a routing decision dump."""
+    if isinstance(value, dict):
+        return {
+            key: "***"
+            if key == "api_key" and isinstance(item, str) and item
+            else _mask_keys_in_decision(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_keys_in_decision(item) for item in value]
+    return value
 
 
 @click.group()
@@ -70,8 +84,9 @@ def route_cmd(prompt: str, config_path: str | None, profile: str | None):
 
     messages = [{"role": "user", "content": prompt}]
     decision = router.route(messages, profile=profile)
+    safe_decision = _mask_keys_in_decision(decision.model_dump())
 
-    click.echo(json.dumps(decision.model_dump(), indent=2))
+    click.echo(json.dumps(safe_decision, indent=2))
 
 
 @main.command("config")
