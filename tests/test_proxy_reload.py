@@ -9,8 +9,9 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 import kani.proxy as proxy_mod
+from kani.config import KaniConfig, ModelRuleEntry, ProviderConfig
 from kani.proxy import RuntimeState, app, configure
-from kani.router import RoutingDecision
+from kani.router import Router, RoutingDecision
 
 
 def _config_text(
@@ -23,8 +24,11 @@ def _config_text(
     compaction_concurrency: int = 2,
     fallback_backoff_enabled: bool = False,
     input_limit_too_small: bool = False,
+    primary_model: str = "auto-simple",
+    fallback_models: str = "[]",
+    provider_body: str = "",
+    model_rules: str = "",
 ) -> str:
-
     alt_profile = ""
     if include_alt_profile:
         alt_profile = """
@@ -64,7 +68,9 @@ def _config_text(
     if smart_proxy_sections:
         smart_proxy = "smart_proxy:\n" + "".join(smart_proxy_sections)
 
-    auto_simple = 'primary: "auto-simple", fallback: [], provider: default'
+    auto_simple = (
+        f'primary: "{primary_model}", fallback: {fallback_models}, provider: default'
+    )
     auto_medium = 'primary: "auto-medium", fallback: [], provider: default'
     auto_complex = 'primary: "auto-complex", fallback: [], provider: default'
     auto_reason = 'primary: "auto-reason", fallback: [], provider: default'
@@ -86,17 +92,18 @@ def _config_text(
             "fallback: [], provider: default"
         )
 
+    provider_extra = provider_body or ""
     return f"""
-host: \"{host}\"
+host: "{host}"
 port: {port}
 default_provider: dummy
 default_profile: {default_profile}
 providers:
   dummy:
     name: dummy
-    base_url: \"http://localhost:9999\"
-    api_key: \"fake\"
-profiles:
+    base_url: "http://localhost:9999"
+    api_key: "fake"
+{provider_extra}profiles:
   auto:
     tiers:
       SIMPLE: {{{auto_simple}}}
@@ -104,7 +111,7 @@ profiles:
       COMPLEX: {{{auto_complex}}}
       REASONING: {{{auto_reason}}}
 {alt_profile}
-{smart_proxy}
+{model_rules}{smart_proxy}
 """
 
 
@@ -136,6 +143,219 @@ def admin_token(monkeypatch):
 
 def _admin_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+class TestReasoningContentCompatibility:
+    def test_config_metadata_explicitly_controls_reasoning_content_support(self):
+        cfg = KaniConfig(
+            providers={
+                "plain": ProviderConfig(
+                    name="plain",
+                    base_url="http://plain.example",
+                ),
+                "supported": ProviderConfig(
+                    name="supported",
+                    base_url="http://supported.example",
+                    supports_reasoning_content=True,
+                ),
+            },
+            model_rules=[
+                ModelRuleEntry(
+                    prefix="model-supported",
+                    provider="plain",
+                    supports_reasoning_content=True,
+                ),
+                ModelRuleEntry(
+                    prefix="model-disabled",
+                    provider="supported",
+                    supports_reasoning_content=False,
+                ),
+            ],
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+
+        assert proxy_mod._supports_reasoning_content("any", "plain", state) is False
+        assert proxy_mod._supports_reasoning_content("any", "supported", state) is True
+        assert (
+            proxy_mod._supports_reasoning_content("model-supported-v1", "plain", state)
+            is True
+        )
+        assert (
+            proxy_mod._supports_reasoning_content(
+                "model-disabled-v1", "supported", state
+            )
+            is False
+        )
+
+    def test_routed_primary_strips_unsupported_reasoning_content(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text(_config_text())
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "kani/auto",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "answer",
+                                "reasoning_content": "private chain",
+                            },
+                            {"role": "user", "content": "hello"},
+                        ],
+                    },
+                )
+
+        assert resp.status_code == 200
+        assert captured[0]["model"] == "auto-simple"
+        assert "reasoning_content" not in captured[0]["messages"][0]
+
+    def test_fallback_sanitizes_with_fallback_candidate_compatibility(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "config.yaml"
+        provider_body = """  fallback:
+    name: fallback
+    base_url: "http://fallback.example"
+    api_key: "fake-fallback"
+"""
+        path.write_text(
+            _config_text(
+                fallback_models='[{model: "fallback-model", provider: "fallback"}]',
+                provider_body=provider_body,
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            if len(captured) == 1:
+                return JSONResponse(status_code=500, content={"error": "boom"})
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "kani/auto",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "answer",
+                                "reasoning_content": "private chain",
+                            },
+                            {"role": "user", "content": "hello"},
+                        ],
+                    },
+                )
+
+        assert resp.status_code == 200
+        assert captured[0]["model"] == "auto-simple"
+        assert captured[1]["model"] == "fallback-model"
+        assert "reasoning_content" not in captured[0]["messages"][0]
+        assert "reasoning_content" not in captured[1]["messages"][0]
+
+    def test_supported_model_preserves_reasoning_content(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        model_rules = """model_rules:
+  - prefix: "auto-simple"
+    provider: "dummy"
+    supports_reasoning_content: true
+"""
+        path.write_text(_config_text(model_rules=model_rules))
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "kani/auto",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "answer",
+                                "reasoning_content": "keep me",
+                            },
+                            {"role": "user", "content": "hello"},
+                        ],
+                    },
+                )
+
+        assert resp.status_code == 200
+        assert captured[0]["messages"][0]["reasoning_content"] == "keep me"
+
+    def test_passthrough_keeps_reasoning_content_unchanged(self, configured_proxy):
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "direct-model",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "content": "answer",
+                                "reasoning_content": "pass through",
+                            },
+                        ],
+                    },
+                )
+
+        assert resp.status_code == 200
+        assert captured[0]["model"] == "direct-model"
+        assert captured[0]["messages"][0]["reasoning_content"] == "pass through"
+
+    def test_reasoning_content_does_not_force_routing_tier(self, configured_proxy):
+        state = proxy_mod._require_runtime_state()
+        without_metadata = state.router.route(
+            [{"role": "user", "content": "hello"}], profile="auto"
+        )
+        with_metadata = state.router.route(
+            [
+                {
+                    "role": "assistant",
+                    "content": "previous answer",
+                    "reasoning_content": "hidden reasoning metadata",
+                },
+                {"role": "user", "content": "hello"},
+            ],
+            profile="auto",
+        )
+
+        assert with_metadata.tier == without_metadata.tier
 
 
 class TestAdminReloadAuth:

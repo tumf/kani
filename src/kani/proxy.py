@@ -759,10 +759,13 @@ async def _try_with_fallbacks(
     runtime = state or _require_runtime_state()
 
     # Try primary
+    primary_body = _sanitize_reasoning_content_for_candidate(
+        body, decision.model, decision.provider, runtime
+    )
     result = await _proxy_upstream(
         decision.base_url.rstrip("/"),
         decision.api_key or "",
-        body,
+        primary_body,
         decision,
         profile=profile,
         actual_provider=decision.provider,
@@ -829,6 +832,9 @@ async def _try_with_fallbacks(
                 fb_normalized_effort,
                 fb.provider,
             )
+        fb_body = _sanitize_reasoning_content_for_candidate(
+            fb_body, fb.model, fb.provider, runtime
+        )
         result = await _proxy_upstream(
             fb.base_url.rstrip("/"),
             fb.api_key or "",
@@ -907,6 +913,77 @@ def _get_reasoning_style_for_candidate(
     return _get_model_reasoning_style(
         model, provider_name, runtime
     ) or _get_provider_reasoning_style(provider_name, runtime)
+
+
+def _get_model_reasoning_content_support(
+    model: str, provider_name: str, runtime: RuntimeState
+) -> bool | None:
+    """Return model-specific reasoning_content support using prefix/provider matching."""
+    best_support: bool | None = None
+    best_score: tuple[int, int] = (-1, -1)
+    for entry in runtime.config.model_rules:
+        prefix_matches = entry.prefix == "*" or model.startswith(entry.prefix)
+        if not prefix_matches:
+            continue
+        if entry.provider and entry.provider != provider_name:
+            continue
+        if entry.supports_reasoning_content is None:
+            continue
+        score = (
+            1 if entry.provider else 0,
+            0 if entry.prefix == "*" else len(entry.prefix),
+        )
+        if score > best_score:
+            best_score = score
+            best_support = entry.supports_reasoning_content
+    return best_support
+
+
+def _supports_reasoning_content(
+    model: str, provider_name: str, runtime: RuntimeState
+) -> bool:
+    """Return whether selected upstream explicitly supports messages[].reasoning_content."""
+    model_support = _get_model_reasoning_content_support(model, provider_name, runtime)
+    if model_support is not None:
+        return model_support
+    provider_cfg = runtime.config.providers.get(provider_name)
+    return bool(provider_cfg and provider_cfg.supports_reasoning_content)
+
+
+def _sanitize_reasoning_content_for_candidate(
+    body: dict[str, Any], model: str, provider_name: str, runtime: RuntimeState
+) -> dict[str, Any]:
+    """Remove messages[].reasoning_content unless selected upstream declares support."""
+    if _supports_reasoning_content(model, provider_name, runtime):
+        return body
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+
+    sanitized_body = dict(body)
+    sanitized_messages: list[Any] = []
+    removed_count = 0
+    for msg in messages:
+        if isinstance(msg, dict) and "reasoning_content" in msg:
+            sanitized_msg = dict(msg)
+            sanitized_msg.pop("reasoning_content", None)
+            sanitized_messages.append(sanitized_msg)
+            removed_count += 1
+        else:
+            sanitized_messages.append(msg)
+
+    if removed_count == 0:
+        return body
+
+    sanitized_body["messages"] = sanitized_messages
+    logger.debug(
+        "REASONING_CONTENT sanitized model=%s provider=%s removed_messages=%d",
+        model,
+        provider_name,
+        removed_count,
+    )
+    return sanitized_body
 
 
 def _has_explicit_reasoning_control(body: dict[str, Any]) -> bool:
