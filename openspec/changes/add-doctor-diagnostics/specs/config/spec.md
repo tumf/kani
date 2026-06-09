@@ -2,7 +2,7 @@
 
 ### Requirement: Doctor command provides safe operational diagnostics
 
-The CLI MUST provide a read-only `doctor` command that reports configuration and local classifier asset health without exposing secrets.
+The CLI MUST provide a read-only `doctor` command that reports configuration and local classifier asset health without exposing secrets. File presence alone MUST NOT be reported as evidence that a classifier asset is active in runtime routing.
 
 #### Scenario: Valid configuration reports health summary
 
@@ -31,3 +31,11 @@ The CLI MUST provide a read-only `doctor` command that reports configuration and
 **When** `kani doctor` inspects local classifier assets
 **Then** the report must identify the asset as legacy or unused unless the current runtime actually loads it
 **And** the report must not silently imply that the asset controls routing decisions
+
+#### Scenario: Feature classifier asset presence is not treated as runtime activation
+
+**Given** the repository contains `models/feature_classifier.pkl`
+**And** current routing code does not explicitly load that asset
+**When** `kani doctor` inspects local classifier assets
+**Then** the report must identify the asset as present but not loaded by current runtime routing
+**And** the report must not label it active based on file presence alone
