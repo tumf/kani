@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+DEFAULT_CLASSIFICATION_INPUT_MAX_CHARS = 3500
+
 _SHORT_FOLLOWUP_PHRASES = {
     "ok",
     "okay",
@@ -83,7 +85,7 @@ def build_classification_input(
     max_context_turns: int = 8,
     max_user_turns: int = 4,
     max_assistant_turns: int = 2,
-    max_chars: int = 3500,
+    max_chars: int = DEFAULT_CLASSIFICATION_INPUT_MAX_CHARS,
 ) -> ClassificationInput:
     """Build deterministic classification text from conversation context."""
 

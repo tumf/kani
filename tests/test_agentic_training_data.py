@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kani.classification_context import DEFAULT_CLASSIFICATION_INPUT_MAX_CHARS
+from kani.scorer import SEMANTIC_DIMENSIONS
 from kani.training_data import (
+    ANNOTATION_PROMPT_MAX_CHARS,
     LLMFeatureAnnotator,
     _classification_prompt_from_record,
     build_feature_dataset,
@@ -170,6 +173,79 @@ def test_llm_feature_annotator_uses_provider_resolved_config_defaults(
     assert annotator.model == "gemini-2.5-flash-lite"
     assert annotator.base_url == "http://127.0.0.1:8317/v1"
     assert annotator.api_key == "test-key"
+
+
+class _AnnotatorResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {dimension: "low" for dimension in SEMANTIC_DIMENSIONS}
+                        )
+                    }
+                }
+            ]
+        }
+
+
+def _capture_annotation_prompt(monkeypatch, prompt: str) -> str:
+    captured: dict[str, object] = {}
+
+    def _post(*args: object, **kwargs: object) -> _AnnotatorResponse:
+        captured["json"] = kwargs["json"]
+        return _AnnotatorResponse()
+
+    monkeypatch.setattr("kani.training_data.httpx.post", _post)
+    annotator = LLMFeatureAnnotator(
+        model="test-model",
+        base_url="http://annotator.example/v1",
+        api_key="test-key",
+    )
+
+    labels = annotator.annotate(prompt)
+
+    assert labels == {dimension: "low" for dimension in SEMANTIC_DIMENSIONS}
+    request_json = captured["json"]
+    assert isinstance(request_json, dict)
+    messages = request_json["messages"]
+    assert isinstance(messages, list)
+    message = messages[0]
+    assert isinstance(message, dict)
+    content = message["content"]
+    assert isinstance(content, str)
+    return content.split("Prompt:\n", 1)[1]
+
+
+def test_annotation_prompt_limit_matches_runtime_classification_default() -> None:
+    assert ANNOTATION_PROMPT_MAX_CHARS == DEFAULT_CLASSIFICATION_INPUT_MAX_CHARS
+
+
+def test_llm_feature_annotator_bounds_prompt_at_runtime_classification_default(
+    monkeypatch,
+) -> None:
+    prompt = "a" * (DEFAULT_CLASSIFICATION_INPUT_MAX_CHARS + 300)
+
+    sent_prompt = _capture_annotation_prompt(monkeypatch, prompt)
+
+    assert len(sent_prompt) == ANNOTATION_PROMPT_MAX_CHARS
+    assert sent_prompt == prompt[:ANNOTATION_PROMPT_MAX_CHARS]
+
+
+def test_llm_feature_annotator_does_not_truncate_prompt_at_2000(
+    monkeypatch,
+) -> None:
+    prompt = "a" * 2000 + "b" * 100
+
+    sent_prompt = _capture_annotation_prompt(monkeypatch, prompt)
+
+    assert len(sent_prompt) == len(prompt)
+    assert sent_prompt == prompt
+    assert sent_prompt[2000:] == "b" * 100
 
 
 def test_checkpoint_resumes_and_skips_already_annotated(tmp_path: Path) -> None:
