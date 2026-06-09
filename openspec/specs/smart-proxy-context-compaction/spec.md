@@ -2,24 +2,15 @@
 
 ### Requirement: Configurable synchronous context compaction
 
-kani MUST allow operators to enable or disable synchronous request-time context compaction independently from other smart-proxy features.
+kani MUST allow operators to enable or disable synchronous request-time context compaction independently from other smart-proxy features. Current documentation MUST describe summary generation configuration using `summary_profile`, not the removed `summary_model` field.
 
-#### Scenario: Inline compaction runs for oversized routed requests
+#### Scenario: Documentation uses summary_profile for summary routing
 
-**Given** smart-proxy synchronous compaction is enabled
-**And** a routed `POST /v1/chat/completions` request exceeds the configured compaction threshold
-**When** kani processes the request
-**Then** kani MUST replace the compactable middle region of `messages` with a generated handoff summary before proxying upstream
-**And** kani MUST preserve configured protected head and tail turns
-**And** kani MUST return an operator-visible signal that inline compaction was applied
-
-#### Scenario: Inline compaction is skipped safely
-
-**Given** smart-proxy synchronous compaction is disabled or the request cannot be compacted safely
-**When** kani processes the routed request
-**Then** kani MUST proxy the request without compaction
-**And** kani MUST preserve existing routing behavior
-**And** kani MUST expose that compaction was skipped or disabled
+**Given** an operator reads current smart-proxy compaction documentation
+**When** they configure synchronous compaction summary generation
+**Then** the documentation must instruct them to use `sync_compaction.summary_profile`
+**And** it must explain that an empty `summary_profile` falls back through default profile routing resolution
+**And** it must not instruct them to configure `sync_compaction.summary_model`
 
 ### Requirement: Session-aware background precompaction
 
