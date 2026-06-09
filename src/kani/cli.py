@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import NoReturn
 
 import click
+import yaml
 
 from kani.config import ConfigIncompleteError, ConfigNotFoundError
 
@@ -81,12 +82,56 @@ def _profile_tier_count(profile: object) -> int:
     return len(tiers) if isinstance(tiers, dict) else 0
 
 
+def _load_raw_config_keys(config_path: str | None) -> set[str]:
+    """Return top-level YAML keys before KaniConfig normalizes legacy aliases."""
+    if config_path is None:
+        return set()
+
+    raw_path = Path(config_path).expanduser()
+    if not raw_path.exists():
+        return set()
+
+    with raw_path.open() as f:
+        loaded = yaml.safe_load(f)
+
+    if not isinstance(loaded, dict):
+        return set()
+    return {str(key) for key in loaded}
+
+
+def _model_metadata_result(cfg: object, raw_config_keys: set[str]) -> DoctorResult:
+    has_raw_model_rules = "model_rules" in raw_config_keys
+    has_raw_model_capabilities = "model_capabilities" in raw_config_keys
+    model_rules = getattr(cfg, "model_rules", [])
+
+    if has_raw_model_rules and has_raw_model_capabilities:
+        return DoctorResult(
+            "error",
+            "model metadata",
+            "both model_rules and legacy model_capabilities are configured",
+        )
+
+    if has_raw_model_capabilities:
+        return DoctorResult(
+            "warn",
+            "model metadata",
+            f"legacy model_capabilities normalized to {len(model_rules)} model_rules",
+        )
+
+    return DoctorResult(
+        "ok",
+        "model metadata",
+        f"model_rules entries: {len(model_rules)}; legacy model_capabilities entries: 0",
+    )
+
+
 def build_doctor_results(
     config_path: str | None, *, models_dir: Path | None = None
 ) -> list[DoctorResult]:
     """Build read-only diagnostics for config and bundled classifier assets."""
     from kani.config import load_config
 
+    raw_config_keys = _load_raw_config_keys(config_path)
     cfg = load_config(config_path, strict=True)
     resolved_models_dir = models_dir or Path.cwd() / "models"
 
@@ -108,30 +153,7 @@ def build_doctor_results(
         ),
     ]
 
-    if cfg.model_rules and cfg.model_capabilities:
-        results.append(
-            DoctorResult(
-                "error",
-                "model metadata",
-                "both model_rules and legacy model_capabilities are configured",
-            )
-        )
-    elif cfg.model_capabilities:
-        results.append(
-            DoctorResult(
-                "warn",
-                "model metadata",
-                f"legacy model_capabilities normalized to {len(cfg.model_rules)} model_rules",
-            )
-        )
-    else:
-        results.append(
-            DoctorResult(
-                "ok",
-                "model metadata",
-                f"model_rules entries: {len(cfg.model_rules)}; legacy model_capabilities entries: 0",
-            )
-        )
+    results.append(_model_metadata_result(cfg, raw_config_keys))
 
     results.append(_classifier_asset_result("tier_classifier.pkl", resolved_models_dir))
     results.append(

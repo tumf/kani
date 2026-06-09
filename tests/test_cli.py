@@ -304,6 +304,38 @@ class TestDoctorCommand:
             in present_result.output
         )
 
+    def test_doctor_legacy_model_capabilities_warns_without_failing(
+        self, runner, empty_dir
+    ) -> None:
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+model_capabilities:
+  - prefix: gpt-4o
+    capabilities:
+      - tools
+"""
+        )
+
+        result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+        assert result.exit_code == 0
+        assert (
+            "[WARN] model metadata: legacy model_capabilities normalized to 1 model_rules"
+            in result.output
+        )
+        assert "[ERROR] model metadata" not in result.output
+
     def test_doctor_invalid_config(self, runner, empty_dir) -> None:
         missing_config = empty_dir / "missing.yaml"
 
