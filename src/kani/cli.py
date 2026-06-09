@@ -5,11 +5,161 @@ from __future__ import annotations
 import json
 import os
 import textwrap
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, NoReturn
 
 import click
+import yaml
 
 from kani.config import ConfigIncompleteError, ConfigNotFoundError
+
+
+@dataclass(frozen=True)
+class DoctorResult:
+    """One human-readable diagnostic finding."""
+
+    severity: str
+    title: str
+    message: str
+
+    def format_line(self) -> str:
+        """Return a concise line with sensitive values redacted defensively."""
+        return f"[{self.severity.upper()}] {self.title}: {_redact_secret_text(self.message)}"
+
+
+_SECRET_MARKERS = ("api_key", "apikey", "authorization", "bearer", "token", "secret")
+
+
+def _redact_secret_text(value: str) -> str:
+    """Best-effort redaction for accidental secret-like substrings in diagnostics."""
+    redacted_words: list[str] = []
+    for word in value.split():
+        lowered = word.lower()
+        if word.startswith(("sk-", "kani_")) or any(
+            marker in lowered for marker in _SECRET_MARKERS
+        ):
+            redacted_words.append("***")
+        else:
+            redacted_words.append(word)
+    return " ".join(redacted_words)
+
+
+def _runtime_loads_classifier_asset(asset_name: str) -> bool:
+    """Return whether scorer.py contains explicit runtime loading for an asset."""
+    scorer_path = Path(__file__).with_name("scorer.py")
+    source = scorer_path.read_text()
+    return asset_name in source and any(
+        marker in source for marker in ("pickle.load", "joblib.load", "load_model")
+    )
+
+
+def _classifier_asset_result(asset_name: str, models_dir: Path) -> DoctorResult:
+    asset_path = models_dir / asset_name
+    if not asset_path.exists():
+        return DoctorResult(
+            "info",
+            asset_name,
+            f"not found at {asset_path}; current runtime uses heuristic scorer",
+        )
+
+    if _runtime_loads_classifier_asset(asset_name):
+        return DoctorResult(
+            "ok",
+            asset_name,
+            "present and explicit runtime loading evidence was found in scorer.py",
+        )
+
+    if asset_name == "tier_classifier.pkl":
+        status = "present but legacy/unused by current runtime routing"
+    else:
+        status = "present but not loaded by current runtime routing"
+    return DoctorResult("warn", asset_name, status)
+
+
+def _profile_tier_count(profile: object) -> int:
+    tiers = getattr(profile, "tiers", {})
+    return len(tiers) if isinstance(tiers, dict) else 0
+
+
+def _load_raw_config_keys(config_path: str | None) -> set[str]:
+    """Return top-level YAML keys before KaniConfig normalizes legacy aliases."""
+    if config_path is None:
+        return set()
+
+    raw_path = Path(config_path).expanduser()
+    if not raw_path.exists():
+        return set()
+
+    with raw_path.open() as f:
+        loaded = yaml.safe_load(f)
+
+    if not isinstance(loaded, dict):
+        return set()
+    return {str(key) for key in loaded}
+
+
+def _model_metadata_result(cfg: object, raw_config_keys: set[str]) -> DoctorResult:
+    has_raw_model_rules = "model_rules" in raw_config_keys
+    has_raw_model_capabilities = "model_capabilities" in raw_config_keys
+    model_rules = getattr(cfg, "model_rules", [])
+
+    if has_raw_model_rules and has_raw_model_capabilities:
+        return DoctorResult(
+            "error",
+            "model metadata",
+            "both model_rules and legacy model_capabilities are configured",
+        )
+
+    if has_raw_model_capabilities:
+        return DoctorResult(
+            "warn",
+            "model metadata",
+            f"legacy model_capabilities normalized to {len(model_rules)} model_rules",
+        )
+
+    return DoctorResult(
+        "ok",
+        "model metadata",
+        f"model_rules entries: {len(model_rules)}; legacy model_capabilities entries: 0",
+    )
+
+
+def build_doctor_results(
+    config_path: str | None, *, models_dir: Path | None = None
+) -> list[DoctorResult]:
+    """Build read-only diagnostics for config and bundled classifier assets."""
+    from kani.config import load_config
+
+    raw_config_keys = _load_raw_config_keys(config_path)
+    cfg = load_config(config_path, strict=True)
+    resolved_models_dir = models_dir or Path.cwd() / "models"
+
+    results = [
+        DoctorResult("ok", "config", "strict config loaded successfully"),
+        DoctorResult(
+            "ok" if cfg.providers else "error",
+            "providers",
+            f"{len(cfg.providers)} provider(s) configured: {', '.join(cfg.providers) or '(none)'}",
+        ),
+        DoctorResult(
+            "ok" if cfg.profiles else "error",
+            "profiles",
+            "; ".join(
+                f"{name} ({_profile_tier_count(profile)} tier(s))"
+                for name, profile in cfg.profiles.items()
+            )
+            or "(none)",
+        ),
+    ]
+
+    results.append(_model_metadata_result(cfg, raw_config_keys))
+
+    results.append(_classifier_asset_result("tier_classifier.pkl", resolved_models_dir))
+    results.append(
+        _classifier_asset_result("feature_classifier.pkl", resolved_models_dir)
+    )
+    return results
 
 
 def _handle_config_error(e: ConfigNotFoundError | ConfigIncompleteError) -> NoReturn:
@@ -87,6 +237,33 @@ def route_cmd(prompt: str, config_path: str | None, profile: str | None):
     safe_decision = _mask_keys_in_decision(decision.model_dump())
 
     click.echo(json.dumps(safe_decision, indent=2))
+
+
+@main.command("doctor")
+@click.option("--config", "config_path", default=None, help="Path to config.yaml")
+@click.option(
+    "--models-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Directory containing classifier assets (default: ./models)",
+)
+def doctor_cmd(config_path: str | None, models_dir: Path | None):
+    """Run read-only diagnostics for config and classifier assets."""
+    click.echo("kani doctor")
+    click.echo("===========")
+    try:
+        results = build_doctor_results(config_path, models_dir=models_dir)
+    except (ConfigNotFoundError, ConfigIncompleteError, ValueError) as e:
+        click.echo(
+            f"[ERROR] config: {_redact_secret_text(type(e).__name__ + ': ' + str(e))}"
+        )
+        raise SystemExit(1) from None
+
+    for result in results:
+        click.echo(result.format_line())
+
+    if any(result.severity == "error" for result in results):
+        raise SystemExit(1)
 
 
 @main.command("config")

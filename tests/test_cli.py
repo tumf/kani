@@ -7,7 +7,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from kani.cli import _mask_keys_in_decision, main
+from kani.cli import DoctorResult, _mask_keys_in_decision, main
 from kani.config import (
     ConfigIncompleteError,
     ConfigNotFoundError,
@@ -257,6 +257,155 @@ feature_annotator:
 
         with pytest.raises(ValueError, match="Unknown provider"):
             load_config(str(config_path), strict=True)
+
+
+def _write_doctor_config(path, *, api_key: str = "${OPENROUTER_API_KEY}") -> None:
+    path.write_text(
+        f"""
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key: {api_key}
+    models:
+      - gpt-4o-mini
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+model_rules:
+  - prefix: gpt-4o
+    capabilities:
+      - tools
+"""
+    )
+
+
+class TestDoctorCommand:
+    def test_doctor_result_formats_readable_line_without_secrets(self) -> None:
+        result = DoctorResult("warn", "provider", "api_key sk-test-secret token")
+
+        line = result.format_line()
+
+        assert line == "[WARN] provider: *** *** ***"
+        assert "sk-test-secret" not in line
+
+    def test_doctor_valid_config(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        models_dir = empty_dir / "models"
+        models_dir.mkdir()
+        _write_doctor_config(config_path)
+
+        result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "[OK] config: strict config loaded successfully" in result.output
+        assert "[OK] providers: 1 provider(s) configured: openrouter" in result.output
+        assert "[OK] profiles: auto (1 tier(s))" in result.output
+
+    def test_doctor_redacts_api_key(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        _write_doctor_config(config_path, api_key="sk-test-secret")
+
+        result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+        assert result.exit_code == 0
+        assert "sk-test-secret" not in result.output
+        assert "api_key" not in result.output
+
+    def test_doctor_tier_classifier_legacy(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        models_dir = empty_dir / "models"
+        models_dir.mkdir()
+        _write_doctor_config(config_path)
+
+        missing_result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+        assert missing_result.exit_code == 0
+        assert "[INFO] tier_classifier.pkl: not found" in missing_result.output
+
+        (models_dir / "tier_classifier.pkl").write_bytes(b"pickle-placeholder")
+        present_result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+        assert present_result.exit_code == 0
+        assert (
+            "[WARN] tier_classifier.pkl: present but legacy/unused by current runtime routing"
+            in present_result.output
+        )
+
+    def test_doctor_feature_classifier_runtime_status(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        models_dir = empty_dir / "models"
+        models_dir.mkdir()
+        _write_doctor_config(config_path)
+
+        missing_result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+        assert missing_result.exit_code == 0
+        assert "[INFO] feature_classifier.pkl: not found" in missing_result.output
+
+        (models_dir / "feature_classifier.pkl").write_bytes(b"pickle-placeholder")
+        present_result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+        assert present_result.exit_code == 0
+        assert (
+            "[WARN] feature_classifier.pkl: present but not loaded by current runtime routing"
+            in present_result.output
+        )
+
+    def test_doctor_legacy_model_capabilities_warns_without_failing(
+        self, runner, empty_dir
+    ) -> None:
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+model_capabilities:
+  - prefix: gpt-4o
+    capabilities:
+      - tools
+"""
+        )
+
+        result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+        assert result.exit_code == 0
+        assert (
+            "[WARN] model metadata: legacy model_capabilities normalized to 1 model_rules"
+            in result.output
+        )
+        assert "[ERROR] model metadata" not in result.output
+
+    def test_doctor_invalid_config(self, runner, empty_dir) -> None:
+        missing_config = empty_dir / "missing.yaml"
+
+        result = runner.invoke(main, ["doctor", "--config", str(missing_config)])
+
+        assert result.exit_code != 0
+        assert "[ERROR] config: ConfigNotFoundError:" in result.output
+        assert "Traceback" not in result.output
 
 
 class TestInitCommand:
