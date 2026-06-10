@@ -100,6 +100,8 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
   - `profiles` (dict[str, ProfileConfig])
   - `default_profile` (str, デフォルト: "auto")
   - `llm_classifier` (LLMClassifierConfig | None)
+  - `model_rules` (list[ModelRuleEntry])
+  - `model_capabilities` (legacy list[ModelRuleEntry])
 
 #### Scenario: プロバイダ設定
 
@@ -159,6 +161,39 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 - WHEN 設定を読み込む
 - THEN システムはこの compaction 設定を従来通り受理する
 - AND この値を per-model `max_input_tokens` として扱ってはならない
+
+### Requirement: モデルメタデータ規則
+
+`model_rules` は prefix-based model metadata の primary configuration surface でなければならない (SHALL)。`model_capabilities` は legacy compatibility alias としてのみ扱われなければならない (SHALL)。
+
+#### Scenario: model_rules primary metadata
+
+- GIVEN `model_rules` に prefix, capabilities, reasoning_style, provider filter が設定されている
+- WHEN 設定を読み込む
+- THEN システムは `model_rules` をモデルメタデータ規則として保持する
+- AND capability filtering と reasoning_style override は `model_rules` を参照する
+
+#### Scenario: legacy model_capabilities alias
+
+- GIVEN `model_rules` が未設定である
+- AND `model_capabilities` に legacy capability entries が設定されている
+- WHEN 設定を読み込む
+- THEN システムは `model_capabilities` を `model_rules` に正規化する
+- AND `model_capabilities` は後方互換の legacy alias として扱われる
+
+#### Scenario: model_rules and legacy alias are mutually exclusive
+
+- GIVEN `model_rules` と `model_capabilities` の両方が設定されている
+- WHEN 設定を検証する
+- THEN システムは曖昧なメタデータ設定として拒否する
+
+#### Scenario: required capabilities fail closed
+
+- GIVEN リクエストが `vision`, `tools`, または `json_mode` の capability を要求する
+- AND 設定済み候補のどれも要求 capability set を宣言していない
+- WHEN ルーティング候補を capability filtering する
+- THEN システムは capability 不足候補を選択してはならない
+- AND 利用可能な候補がない場合は capability-satisfied candidate がないことを示すエラーで fail closed する
 
 ### Requirement: オーバーライド
 
@@ -234,3 +269,53 @@ LLM 分類器の設定はオプショナルで、API キーは複数のソース
 - GIVEN `feature_annotator.provider` または `llm_classifier.provider` に `providers` に存在しない名前が設定されている
 - WHEN 設定を検証する
 - THEN システムはその設定を不正として拒否する
+
+### Requirement: Model metadata documentation
+
+`model_rules` is the primary configuration surface for prefix-based model metadata. The `supports_reasoning_content` field in each entry uses the same prefix/provider scoring precedence as `reasoning_style`: provider-matching rules always take priority over provider-agnostic rules, even when the provider-agnostic rule has a longer prefix.
+
+#### Scenario: Model rule precedence is documented
+
+**Given** an operator reads `model_rules` documentation or the relevant function docstring
+**When** kani resolves `supports_reasoning_content`
+**Then** the precedence (provider-match > prefix length) is clearly described so the operator can configure rules with confidence
+
+### Requirement: Doctor command provides safe operational diagnostics
+
+The CLI MUST provide a read-only `doctor` command that reports configuration and local classifier asset health without exposing secrets. File presence alone MUST NOT be reported as evidence that a classifier asset is active in runtime routing.
+
+#### Scenario: Valid configuration reports health summary
+
+**Given** a valid kani config path
+**When** `kani doctor --config <path>` is executed
+**Then** the command must print a concise health report containing providers, profiles, model metadata status, and classifier asset status
+**And** the command must exit with status 0 when only warnings are present
+
+#### Scenario: Doctor output redacts secrets
+
+**Given** a config file whose provider API key resolves to a non-empty secret
+**When** `kani doctor --config <path>` is executed
+**Then** the output must not contain the literal API key
+**And** the output may indicate whether an API key is configured using masked or boolean status only
+
+#### Scenario: Invalid configuration fails clearly
+
+**Given** a missing or incomplete config path
+**When** `kani doctor --config <path>` is executed
+**Then** the command must exit non-zero
+**And** the output must identify the config loading problem without a Python traceback
+
+#### Scenario: Legacy classifier asset is reported explicitly
+
+**Given** the repository contains `models/tier_classifier.pkl`
+**When** `kani doctor` inspects local classifier assets
+**Then** the report must identify the asset as legacy or unused unless the current runtime actually loads it
+**And** the report must not silently imply that the asset controls routing decisions
+
+#### Scenario: Feature classifier asset presence is not treated as runtime activation
+
+**Given** the repository contains `models/feature_classifier.pkl`
+**And** current routing code does not explicitly load that asset
+**When** `kani doctor` inspects local classifier assets
+**Then** the report must identify the asset as present but not loaded by current runtime routing
+**And** the report must not label it active based on file presence alone

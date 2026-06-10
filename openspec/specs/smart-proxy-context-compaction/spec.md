@@ -2,24 +2,15 @@
 
 ### Requirement: Configurable synchronous context compaction
 
-kani MUST allow operators to enable or disable synchronous request-time context compaction independently from other smart-proxy features.
+kani MUST allow operators to enable or disable synchronous request-time context compaction independently from other smart-proxy features. Current documentation MUST describe summary generation configuration using `summary_profile`, not the removed `summary_model` field.
 
-#### Scenario: Inline compaction runs for oversized routed requests
+#### Scenario: Documentation uses summary_profile for summary routing
 
-**Given** smart-proxy synchronous compaction is enabled
-**And** a routed `POST /v1/chat/completions` request exceeds the configured compaction threshold
-**When** kani processes the request
-**Then** kani MUST replace the compactable middle region of `messages` with a generated handoff summary before proxying upstream
-**And** kani MUST preserve configured protected head and tail turns
-**And** kani MUST return an operator-visible signal that inline compaction was applied
-
-#### Scenario: Inline compaction is skipped safely
-
-**Given** smart-proxy synchronous compaction is disabled or the request cannot be compacted safely
-**When** kani processes the routed request
-**Then** kani MUST proxy the request without compaction
-**And** kani MUST preserve existing routing behavior
-**And** kani MUST expose that compaction was skipped or disabled
+**Given** an operator reads current smart-proxy compaction documentation
+**When** they configure synchronous compaction summary generation
+**Then** the documentation must instruct them to use `sync_compaction.summary_profile`
+**And** it must explain that an empty `summary_profile` falls back through default profile routing resolution
+**And** it must not instruct them to configure `sync_compaction.summary_model`
 
 ### Requirement: Session-aware background precompaction
 
@@ -44,22 +35,26 @@ kani MUST support session-aware background precompaction that can be enabled or 
 
 ### Requirement: Switchable session and telemetry controls
 
-kani MUST expose switchable controls and operator-visible telemetry for smart-proxy context reduction behavior.
+kani MUST expose switchable controls and operator-visible telemetry for smart-proxy context reduction behavior. Documentation and specs MUST match the current intended session identity behavior: explicit session headers produce stable session IDs, while no-header requests do not use derived session IDs.
 
 #### Scenario: Explicit session header is preferred
 
 **Given** a client sends the configured session header
 **When** kani resolves session identity for smart-proxy compaction
-**Then** kani MUST prefer the explicit header over derived identifiers
+**Then** kani MUST use the explicit header value as the stable session identifier
 **And** kani MUST make the resolution mode observable for operators
 
-#### Scenario: Compaction failures do not break proxying
+#### Scenario: No-header requests use no derived session
+
+**Given** a client does not send the configured session header
+**When** kani resolves session identity for smart-proxy compaction
+**Then** kani MUST NOT derive a synthetic session ID from model or message content
+**And** kani MUST treat the request as having no session ID
+
+#### Scenario: No-header compaction has no persistent session features
 
 **Given** smart-proxy compaction is enabled
-**And** summary generation, persistence, or cache lookup fails
-**When** kani handles the request
-**Then** kani MUST continue proxying the request without returning a compaction-specific failure to the client
-**And** kani MUST record the failure for operators through logs or metrics
-
-
-#
+**And** a client does not send the configured session header
+**When** kani evaluates compaction behavior
+**Then** synchronous inline compaction MAY still run when the request exceeds the configured threshold
+**And** cached summary reuse, session persistence, incremental summarization, and background precompaction MUST NOT run because no session ID is available

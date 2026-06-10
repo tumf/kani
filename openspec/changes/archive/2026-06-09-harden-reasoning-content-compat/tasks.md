@@ -1,0 +1,50 @@
+## Implementation Tasks
+
+- [x] Document reasoning-content model-rule precedence in `src/kani/proxy.py`. Completion condition: `_get_model_reasoning_content_support` docstring states that provider-matching rules outrank provider-agnostic rules before prefix specificity is considered. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k scoring_precedence`)
+
+- [x] Add unit coverage for wildcard provider-specific precedence in `tests/test_proxy_reload.py`. Completion condition: a test constructs conflicting model rules where `{prefix: "*", provider: "dummy", supports_reasoning_content: False}` beats `{prefix: "sonnet-", supports_reasoning_content: True}` for provider `dummy`. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k scoring_precedence`)
+
+- [x] Add warning logging for unknown provider reasoning-content fallback in `src/kani/proxy.py`. Completion condition: `_supports_reasoning_content` logs a warning when no model rule matches and `provider_name` is missing from `runtime.config.providers`, while still returning `False`. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k unknown_provider`)
+
+- [x] Deep-copy sanitized message dicts in `src/kani/proxy.py`. Completion condition: `_sanitize_reasoning_content_for_candidate` returns a body whose `messages` entries are independent copies whenever sanitization occurs. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k sanitizer_deep_copies_messages`)
+
+- [x] Normalize optional YAML fragments in `tests/test_proxy_reload.py::_config_text`. Completion condition: `provider_body` and `model_rules` fragments are accepted with or without trailing newline and produce parseable YAML. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k config_text`)
+
+- [x] Run focused regression tests for reasoning-content compatibility. Completion condition: reasoning-content primary, fallback, supported-model, passthrough, and routing-tier tests pass. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k reasoning_content`)
+
+- [x] Run project quality gates. Completion condition: lint, format check, typecheck, and full tests pass locally. (verification: integration - `uv run ruff check src/ && uv run ruff format --check src/ tests/ && uv run pyright src/ && uv run pytest tests/ -q`)
+
+## Future Work
+
+None.
+
+## Acceptance #1 Failure Follow-up
+- [x] Preserve repository-verifiable implementation/spec evidence after acceptance follow-up changes. Completion condition: `src/kani/proxy.py:918-944` documents and implements provider-match-before-prefix scoring for `_get_model_reasoning_content_support`; `src/kani/proxy.py:947-962` logs unknown provider warning and returns false; `src/kani/proxy.py:965-996` deep-copies messages during sanitization; `tests/test_proxy_reload.py:203-242`, `243-277`, `278-315`, and `317-342` cover precedence/docstring, unknown-provider warning, deep-copy isolation, and YAML fragment newline boundaries. (verification: unit - `src/kani/proxy.py`, `tests/test_proxy_reload.py`, `uv run pytest tests/test_proxy_reload.py -q -k 'config_text or unknown_provider or scoring_precedence or sanitizer_deep_copies_messages or reasoning_content'`)
+## Acceptance #2 Failure Follow-up
+- [x] Fix archive-gate-rejected verification notes in prior follow-up tasks. Completion condition: `openspec/changes/harden-reasoning-content-compat/tasks.md:27-33` uses repository paths in every behavior-bearing verification note, with evidence in `src/kani/proxy.py` and `tests/test_proxy_reload.py`. (verification: integration - `openspec/changes/harden-reasoning-content-compat/tasks.md`, `src/kani/proxy.py`, `tests/test_proxy_reload.py`)
+- [x] Add non-OpenSpec test hardening for unknown-provider warning context. Completion condition: `tests/test_proxy_reload.py::TestReasoningContentCompatibility::test_unknown_provider_logs_warning` asserts that the warning contains both the missing provider and model name, confirming operator-diagnostic context is preserved. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k unknown_provider`)
+- [x] Re-run focused reasoning-content compatibility regression after the acceptance follow-up. Completion condition: `src/kani/proxy.py` retains docstring/warning/deepcopy behavior and `tests/test_proxy_reload.py` retains precedence/deepcopy/config-fragment/reasoning-content tests. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k 'scoring_precedence or unknown_provider or sanitizer_deep_copies_messages or config_text or reasoning_content'`)
+
+## Acceptance #3 Failure Follow-up
+- [x] Fix archive-gate-rejected verification notes in Acceptance #1/#2 follow-up tasks. Completion condition: `openspec/changes/harden-reasoning-content-compat/tasks.md:27` and `openspec/changes/harden-reasoning-content-compat/tasks.md:31` cite repository-verifiable evidence paths instead of relying only on archive-gate command text. (verification: integration - `openspec/changes/harden-reasoning-content-compat/tasks.md`, `src/kani/proxy.py`, `tests/test_proxy_reload.py`)
+- [x] Add non-OpenSpec assertion hardening for unknown-provider warning cardinality. Completion condition: `tests/test_proxy_reload.py::TestReasoningContentCompatibility::test_unknown_provider_logs_warning` asserts exactly one `kani.proxy` warning record in addition to the missing provider and model names. (verification: unit - `uv run pytest tests/test_proxy_reload.py -q -k unknown_provider`)
+- [x] Preserve repository-verifiable evidence after verification-note and test hardening. Completion condition: the tasks and test changes are present in `src/kani/proxy.py`, `tests/test_proxy_reload.py`, and `openspec/changes/harden-reasoning-content-compat/tasks.md`. (verification: integration - `src/kani/proxy.py`, `tests/test_proxy_reload.py`, `openspec/changes/harden-reasoning-content-compat/tasks.md`)
+
+## Acceptance #4 Failure Follow-up
+- [x] Fix verification note in Acceptance #3 follow-up task. Completion condition: `openspec/changes/harden-reasoning-content-compat/tasks.md:38` cites repository-verifiable evidence paths without making final OpenSpec validation a checkbox-owned task. (verification: integration - `openspec/changes/harden-reasoning-content-compat/tasks.md`, `src/kani/proxy.py`, `tests/test_proxy_reload.py`)
+- [x] Add non-OpenSpec assertion hardening for unknown-provider warning message shape. Completion condition: `tests/test_proxy_reload.py::TestReasoningContentCompatibility::test_unknown_provider_logs_warning` asserts the exact `kani.proxy` warning message contains both `model=unknown-model` and `provider=missing-provider`. (verification: unit - `tests/test_proxy_reload.py`, `uv run pytest tests/test_proxy_reload.py -q -k unknown_provider`)
+- [x] Preserve repository-verifiable evidence after Acceptance #4 verification-note and test hardening. Completion condition: repository-verifiable evidence is preserved in `src/kani/proxy.py`, `tests/test_proxy_reload.py`, and `openspec/changes/harden-reasoning-content-compat/tasks.md`. (verification: integration - `src/kani/proxy.py`, `tests/test_proxy_reload.py`, `openspec/changes/harden-reasoning-content-compat/tasks.md`)
+
+## Acceptance #5 Failure Follow-up
+- [x] Move self-referential final validation out of active task sections. Completion condition: `openspec/changes/harden-reasoning-content-compat/tasks.md` no longer contains a final OpenSpec validation checkbox task under Acceptance #3/#4/#5 active follow-up sections; final validation remains documented only in the non-checkbox Final Validation section. (verification: integration - `openspec/changes/harden-reasoning-content-compat/tasks.md`, `src/kani/proxy.py`, `tests/test_proxy_reload.py`)
+- [x] Add non-OpenSpec assertion hardening for reasoning-content precedence documentation. Completion condition: `tests/test_proxy_reload.py::TestReasoningContentCompatibility::test_scoring_precedence_wildcard_provider_beats_specific_prefix` asserts the docstring documents provider-matching precedence before prefix specificity. (verification: unit - `tests/test_proxy_reload.py`, `uv run pytest tests/test_proxy_reload.py -q -k scoring_precedence`)
+
+## Final Validation
+
+Archive validation is the authoritative final OpenSpec validation gate and is intentionally not represented as a checkbox task.
+Expected archive gate: `cflx openspec validate harden-reasoning-content-compat --archive-gate`
+
+## Acceptance #6 Failure Follow-up
+- [x] Remove self-referential final-validation checkbox blockers from active task sections. Completion condition: the final validation command text remains only in the non-checkbox `## Final Validation` section, while active follow-up sections no longer contain checkbox tasks whose completion depends solely on the final OpenSpec validation gate. (verification: integration - `openspec/changes/harden-reasoning-content-compat/tasks.md`, `src/kani/proxy.py`, `tests/test_proxy_reload.py`)
+- [x] Add non-OpenSpec assertion hardening for YAML fragment boundary normalization. Completion condition: `tests/test_proxy_reload.py::TestReasoningContentCompatibility::test_config_text_accepts_optional_fragments_without_trailing_newline` asserts the rendered YAML contains newline boundaries between `provider_body` and `profiles`, and between `model_rules` and `smart_proxy`, while still parsing successfully. (verification: unit - `tests/test_proxy_reload.py`, `uv run pytest tests/test_proxy_reload.py -q -k config_text`)
+- [x] Re-run focused reasoning-content compatibility regression after Acceptance #6 hardening. Completion condition: precedence documentation, unknown-provider warning context, sanitizer deep-copy isolation, config fragment normalization, and reasoning-content routing tests pass with repository-verifiable evidence in `src/kani/proxy.py` and `tests/test_proxy_reload.py`. (verification: unit - `src/kani/proxy.py`, `tests/test_proxy_reload.py`, `uv run pytest tests/test_proxy_reload.py -q -k 'config_text or unknown_provider or scoring_precedence or sanitizer_deep_copies_messages or reasoning_content'`)

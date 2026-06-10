@@ -163,10 +163,10 @@ kani automatically detects required capabilities from the request and routes to 
 | `tools` | `tools` or `functions` field in request |
 | `json_mode` | `response_format.type` is `json_object` or `json_schema` |
 
-**Configuration:** declare model capabilities via prefix matching in `config.yaml`:
+**Configuration:** declare model metadata via prefix matching in `config.yaml` using `model_rules`:
 
 ```yaml
-model_capabilities:
+model_rules:
   - prefix: "anthropic/claude-"
     capabilities: [vision, tools, json_mode]
   - prefix: "google/gemini-"
@@ -175,7 +175,7 @@ model_capabilities:
     capabilities: [vision, tools, json_mode]
 ```
 
-When no `model_capabilities` are configured, capability filtering is skipped and routing works as before.
+`model_rules` is the primary model metadata surface. The older `model_capabilities` key remains a legacy alias and is normalized into `model_rules` only when `model_rules` is unset. When a request requires capabilities and no configured candidate declares the full required set, routing fails closed instead of selecting an incapable model.
 
 ## API endpoints
 
@@ -242,7 +242,8 @@ smart_proxy:
 ```
 
 - `${VAR}` syntax resolves environment variables
-- Each tier can specify its own `provider` or inherit `default_provider`
+- Provider resolution order is: model-entry `provider` > tier-level `provider` > `default_provider`
+- Configured model IDs are sent literally to the selected provider; `anthropic/claude-sonnet-4.6` is not parsed by kani as a provider selector unless you also set a `provider` field
 - `primary` accepts a string, `{model, provider, max_input_tokens}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
 - `fallback` accepts the same string/object entries as `primary`; object entries can set `max_input_tokens` so candidates with a known input limit lower than the estimated prompt tokens are skipped
 - Candidates without `max_input_tokens` remain eligible because their input limit is unknown
@@ -275,7 +276,7 @@ smart_proxy:
       threshold_percent: 80.0            # compact when prompt ≥ 80% of context window
       protect_first_n: 1                 # turns to keep at head of conversation
       protect_last_n: 2                  # turns to keep at tail
-      summary_model: ""                  # empty = use 'compress' profile primary model
+      summary_profile: ""                # empty = resolve through default_profile
 
     background_precompaction:
       enabled: true                      # Phase B: pre-compute summaries async
@@ -289,16 +290,16 @@ smart_proxy:
     context_window_tokens: 128000        # assumed context window for threshold math
 ```
 
-A `compress` routing profile (see `config.example.yaml`) is used as the default summarisation model when `summary_model` is empty.
+Summary generation is selected by routing profile. Set `summary_profile` to a profile such as `compress` to route summaries through that profile; leave it empty to fall back to `default_profile` via the router's normal model resolution.
 
 ### Session identity
 
-kani resolves a stable session key in this order:
+kani uses a stable session key only when the client sends the configured explicit session header:
 
-1. **Explicit header** — value of `session.header_name` (preferred; required for Phase B cache hits)
-2. **Derived** — deterministic hash of model + first/last message content
+1. **Explicit header** — value of `session.header_name` (required for Phase B cache hits, persistence, incremental summarization, and background precompaction)
+2. **No header** — no session ID is derived; inline compaction may still run for an oversized request, but cache reuse and background precompaction are unavailable
 
-The resolution mode is surfaced in the `X-Kani-Compaction-Session` response header.
+The resolution mode is surfaced in the `X-Kani-Compaction-Session` response header as `explicit` or `none`.
 
 ### Operator telemetry
 
@@ -307,7 +308,7 @@ Each routed response includes compaction headers:
 | Header | Values | Meaning |
 |--------|--------|---------|
 | `X-Kani-Compaction` | `off` \| `skipped` \| `inline` \| `cached` \| `failed` | What compaction did |
-| `X-Kani-Compaction-Session` | `explicit` \| `derived` | How session was resolved |
+| `X-Kani-Compaction-Session` | `explicit` \| `none` | How session was resolved |
 | `X-Kani-Compaction-Saved-Tokens` | integer | Estimated tokens saved |
 
 Structured log fields are emitted at `INFO` level on every compaction decision. Failures are logged at `WARNING` level and never propagate to the client.

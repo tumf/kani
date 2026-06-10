@@ -76,6 +76,7 @@ class ProviderConfig(BaseModel):
     reasoning_style: Literal[
         "openai", "xai", "anthropic", "dashscope", "gemini", "none"
     ] = "none"
+    supports_reasoning_content: bool = False
 
 
 class ModelEntry(BaseModel):
@@ -301,6 +302,7 @@ class ModelRuleEntry(BaseModel):
     reasoning_style: (
         Literal["openai", "xai", "anthropic", "dashscope", "gemini", "none"] | None
     ) = None
+    supports_reasoning_content: bool | None = None
 
 
 ModelCapabilityEntry = ModelRuleEntry

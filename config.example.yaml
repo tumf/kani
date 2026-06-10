@@ -49,21 +49,26 @@ default_profile: auto
 #       max_concurrency: 2
 #       summary_ttl_seconds: 3600
 #     session:
+#       # Explicit session header. If omitted by the client, kani does not derive
+#       # a session ID; inline compaction may run, but cache/background reuse is unavailable.
 #       header_name: X-Kani-Session-Id
 #     context_window_tokens: 128000
 
 # ---------------------------------------------------------------------------
-# Model Capabilities (prefix-based)
+# Model Rules (prefix-based metadata)
 # ---------------------------------------------------------------------------
-# Declare which models support which capabilities using prefix matching.
+# Declare model metadata using prefix matching.
 # Supported capabilities: vision, tools, json_mode
+#
+# model_rules is the primary metadata key. Legacy model_capabilities is accepted
+# only when model_rules is unset and is normalized into model_rules.
 #
 # When a request requires a capability (e.g., image_url in messages, tools field,
 # or response_format.type = json_object), only models matching these prefixes
-# will be considered. If no capable model exists in the current tier, the router
-# escalates to higher tiers.
+# will be considered. If no configured candidate declares all required
+# capabilities, routing fails closed instead of selecting an incapable model.
 #
-model_capabilities:
+model_rules:
     - prefix: "gpt-4"
       capabilities: [vision, tools, json_mode]
     - prefix: "gpt-4o"
@@ -99,7 +104,10 @@ providers:
 # primary: model to use first (string/object) or ordered list for round-robin
 # fallback: list of models tried on upstream error (5xx / timeout)
 #   - fallback: null is allowed and treated as []
-# provider: optional override; defaults to default_provider
+# provider: optional override; resolution order is model-entry provider,
+# then tier-level provider, then default_provider.
+# Model IDs are sent literally to the selected provider; kani does not parse
+# provider/model strings as provider selectors.
 # Object entries may include max_input_tokens so long requests skip known
 # too-small models while string entries keep backward-compatible unknown limits.
 #
