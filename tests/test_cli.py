@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from kani.cli import DoctorResult, _mask_keys_in_decision, main
+from kani.cli import (
+    DoctorResult,
+    _mask_keys_in_decision,
+    _runtime_loads_classifier_asset,
+    main,
+)
 from kani.config import (
     ConfigIncompleteError,
     ConfigNotFoundError,
@@ -442,6 +448,31 @@ model_capabilities:
         assert result.exit_code != 0
         assert "[ERROR] config: ConfigNotFoundError:" in result.output
         assert "Traceback" not in result.output
+
+    def test_doctor_malformed_config_reports_redacted_error(
+        self, runner, empty_dir
+    ) -> None:
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text("providers: [")
+
+        result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+        assert result.exit_code != 0
+        assert (
+            "[ERROR] config: ValueError: failed to read raw config keys:"
+            in result.output
+        )
+        assert "Traceback" not in result.output
+
+    def test_classifier_asset_runtime_check_handles_unreadable_scorer(
+        self, monkeypatch
+    ) -> None:
+        def unreadable(self: Path) -> str:
+            raise OSError("cannot read scorer")
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+
+        assert _runtime_loads_classifier_asset("feature_classifier.pkl") is False
 
 
 class TestInitCommand:

@@ -48,7 +48,10 @@ def _redact_secret_text(value: str) -> str:
 def _runtime_loads_classifier_asset(asset_name: str) -> bool:
     """Return whether scorer.py contains explicit runtime loading for an asset."""
     scorer_path = Path(__file__).with_name("scorer.py")
-    source = scorer_path.read_text()
+    try:
+        source = scorer_path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return False
     return asset_name in source and any(
         marker in source for marker in ("pickle.load", "joblib.load", "load_model")
     )
@@ -90,8 +93,11 @@ def _load_raw_config_keys(config_path: str | None) -> set[str]:
     if raw_path is None:
         return set()
 
-    with raw_path.open() as f:
-        loaded = yaml.safe_load(f)
+    try:
+        with raw_path.open() as f:
+            loaded = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError) as e:
+        raise ValueError(f"failed to read raw config keys: {e}") from e
 
     if not isinstance(loaded, dict):
         return set()
@@ -252,7 +258,12 @@ def doctor_cmd(config_path: str | None, models_dir: Path | None):
     click.echo("===========")
     try:
         results = build_doctor_results(config_path, models_dir=models_dir)
-    except (ConfigNotFoundError, ConfigIncompleteError, ValueError) as e:
+    except (
+        ConfigNotFoundError,
+        ConfigIncompleteError,
+        ValueError,
+        yaml.YAMLError,
+    ) as e:
         click.echo(
             f"[ERROR] config: {_redact_secret_text(type(e).__name__ + ': ' + str(e))}"
         )
