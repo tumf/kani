@@ -1488,7 +1488,9 @@ async def chat_completions(request: Request):
         return _openai_error(400, "Invalid JSON body")
 
     model_field: str = body.get("model", "")
-    messages = body.get("messages", [])
+    if "messages" not in body:
+        return _openai_error(400, "messages is required")
+    messages = body["messages"]
 
     if model_field.startswith("kani/"):
         # ── Routed request ────────────────────────────────────────────────
@@ -1816,7 +1818,9 @@ async def route_debug(request: Request):
     except Exception:
         return _openai_error(400, "Invalid JSON body")
 
-    messages = body.get("messages", [])
+    if "messages" not in body:
+        return _openai_error(400, "messages is required")
+    messages = body["messages"]
     profile = body.get("profile", None)
 
     try:
