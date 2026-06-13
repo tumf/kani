@@ -23,9 +23,9 @@ Unified distilled-feature pipeline:
 3. **Weighted synthesis** — all 15 dimensions are aggregated into one routing score
 4. **Tier mapping** — score maps to `SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`
 5. **Unified agentic score** — `agenticTask` dimension maps directly to `agentic_score`
-6. **Conservative default** — fallback to `MEDIUM` only when the feature model is unavailable
+6. **Conservative default** — fallback to `MEDIUM` when the feature model, embedding configuration/request, or prediction path is unavailable
 
-Runtime scorer intentionally avoids runtime LLM fallback and separate agentic classifier paths.
+Runtime scorer intentionally avoids heuristic semantic fallback, runtime LLM fallback, and separate agentic classifier paths.
 
 ## Routing logs
 
