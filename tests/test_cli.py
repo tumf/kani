@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -336,6 +335,7 @@ class TestDoctorCommand:
         )
         assert missing_result.exit_code == 0
         assert "[INFO] tier_classifier.pkl: not found" in missing_result.output
+        assert "legacy classifier is unused" in missing_result.output
 
         (models_dir / "tier_classifier.pkl").write_bytes(b"pickle-placeholder")
         present_result = runner.invoke(
@@ -348,7 +348,9 @@ class TestDoctorCommand:
             in present_result.output
         )
 
-    def test_doctor_feature_classifier_runtime_status(self, runner, empty_dir) -> None:
+    def test_doctor_feature_classifier_missing_warns_default_only(
+        self, runner, empty_dir
+    ) -> None:
         config_path = empty_dir / "config.yaml"
         models_dir = empty_dir / "models"
         models_dir.mkdir()
@@ -358,8 +360,16 @@ class TestDoctorCommand:
             main,
             ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
         )
+
         assert missing_result.exit_code == 0
-        assert "[INFO] feature_classifier.pkl: not found" in missing_result.output
+        assert "[WARN] feature_classifier.pkl: not found" in missing_result.output
+        assert "default-only routing mode" in missing_result.output
+
+    def test_doctor_feature_classifier_runtime_status(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        models_dir = empty_dir / "models"
+        models_dir.mkdir()
+        _write_doctor_config(config_path)
 
         (models_dir / "feature_classifier.pkl").write_bytes(b"pickle-placeholder")
         present_result = runner.invoke(
@@ -368,9 +378,10 @@ class TestDoctorCommand:
         )
         assert present_result.exit_code == 0
         assert (
-            "[WARN] feature_classifier.pkl: present but not loaded by current runtime routing"
+            "[WARN] feature_classifier.pkl: present but unloadable"
             in present_result.output
         )
+        assert "default-only routing mode" in present_result.output
 
     def test_doctor_legacy_model_capabilities_warns_without_failing(
         self, runner, empty_dir
@@ -464,15 +475,9 @@ model_capabilities:
         )
         assert "Traceback" not in result.output
 
-    def test_classifier_asset_runtime_check_handles_unreadable_scorer(
-        self, monkeypatch
-    ) -> None:
-        def unreadable(self: Path) -> str:
-            raise OSError("cannot read scorer")
-
-        monkeypatch.setattr(Path, "read_text", unreadable)
-
-        assert _runtime_loads_classifier_asset("feature_classifier.pkl") is False
+    def test_classifier_asset_runtime_check_uses_runtime_marker(self) -> None:
+        assert _runtime_loads_classifier_asset("feature_classifier.pkl") is True
+        assert _runtime_loads_classifier_asset("tier_classifier.pkl") is False
 
 
 class TestInitCommand:

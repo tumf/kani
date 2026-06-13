@@ -39,7 +39,7 @@ The scorer is now distilled-feature-first:
 - compute separate **complexity** and **reasoning** axis scores from the dimensions
 - determine tier from these axis scores (`SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`)
 - expose `agentic_score` from the `agenticTask` dimension independently (does not affect tier)
-- return a conservative default tier only when the feature model is unavailable
+- return a conservative default tier when the feature model, embedding configuration, embedding request, or prediction path is unavailable
 
 **Axis-based tier thresholds:**
 
