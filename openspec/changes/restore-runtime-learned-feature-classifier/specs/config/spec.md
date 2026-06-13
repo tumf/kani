@@ -21,7 +21,16 @@ The CLI MUST provide a read-only `doctor` command that reports configuration and
 #### Scenario: Feature classifier runtime loading is reported when code supports it
 
 **Given** the repository contains `models/feature_classifier.pkl`
-**And** current routing code explicitly loads `feature_classifier.pkl` at runtime
+**And** the runtime scorer exposes a stable runtime-support marker indicating it loads `feature_classifier.pkl`
 **When** `kani doctor` inspects local classifier assets
-**Then** the report must not describe the asset as unused solely because the older heuristic runtime path existed
+**Then** the report must derive runtime-loading support from that marker rather than from scanning source code
+**And** the report must not describe the asset as unused solely because the older heuristic runtime path existed
 **And** the report must still avoid claiming successful runtime activation without executing the classifier path
+
+#### Scenario: Feature classifier asset is absent under runtime support
+
+**Given** the runtime scorer exposes a runtime-support marker for `feature_classifier.pkl`
+**And** `models/feature_classifier.pkl` is missing or cannot be loaded
+**When** `kani doctor` inspects local classifier assets
+**Then** the report must warn that routing is operating in default-only mode
+**And** the report must not present routing as using learned classification

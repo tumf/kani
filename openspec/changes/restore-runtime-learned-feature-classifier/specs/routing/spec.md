@@ -13,6 +13,7 @@
 - AND 15 次元特徴量の重み付き合成スコアからティアを決定する
 - AND signals.method は `distilled-features` である
 - AND signals には learned classifier 由来の semantic labels と dimension ごとのスコアが含まれる
+- AND signals.featureVersion は bundle の `feature_schema_version` から導出される
 
 #### Scenario: 蒸留特徴量分類器が利用不可
 
@@ -30,3 +31,12 @@
 - THEN デフォルトフォールバック結果を返す: tier=MEDIUM, confidence=0.35, score=0.0
 - AND signals.method は `default` である
 - AND heuristic semantic labels を runtime fallback として使用しない
+
+#### Scenario: embedding 呼び出しがタイムアウトする
+
+- GIVEN 蒸留特徴量分類器は読み込めた
+- AND runtime embedding 呼び出しが設定された timeout を超過する
+- WHEN プロンプトを分類する
+- THEN embedding 失敗として扱い、デフォルトフォールバック結果を返す: tier=MEDIUM, confidence=0.35, score=0.0
+- AND signals.method は `default` である
+- AND embedding timeout が routing 全体をブロックしない
