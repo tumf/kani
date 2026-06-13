@@ -13,6 +13,16 @@ import kani.proxy as proxy_mod
 from kani.config import KaniConfig, ModelRuleEntry, ProviderConfig
 from kani.proxy import RuntimeState, app, configure
 from kani.router import Router, RoutingDecision
+from kani.scorer import ClassificationResult, Tier
+
+
+def _simple_classification(_: object, text: str) -> ClassificationResult:
+    return ClassificationResult(
+        score=0.0,
+        tier=Tier.SIMPLE,
+        confidence=0.9,
+        signals={"method": {"raw": "test"}, "tokenCount": len(text.split())},
+    )
 
 
 def _config_text(
@@ -399,6 +409,7 @@ class TestReasoningContentCompatibility:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
             with TestClient(app, raise_server_exceptions=False) as client:
                 resp = client.post(
                     "/v1/chat/completions",
@@ -408,7 +419,7 @@ class TestReasoningContentCompatibility:
                             {
                                 "role": "assistant",
                                 "content": "answer",
-                                "reasoning_content": "private chain",
+                                "reasoning_content": "keep me",
                             },
                             {"role": "user", "content": "hello"},
                         ],
@@ -463,6 +474,7 @@ class TestReasoningContentCompatibility:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
             with TestClient(app, raise_server_exceptions=False) as client:
                 resp = client.post(
                     "/v1/chat/completions",
@@ -506,6 +518,7 @@ class TestReasoningContentCompatibility:
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
             with TestClient(app, raise_server_exceptions=False) as client:
                 resp = client.post(
                     "/v1/chat/completions",

@@ -46,38 +46,52 @@ def _redact_secret_text(value: str) -> str:
 
 
 def _runtime_loads_classifier_asset(asset_name: str) -> bool:
-    """Return whether scorer.py contains explicit runtime loading for an asset."""
-    scorer_path = Path(__file__).with_name("scorer.py")
-    try:
-        source = scorer_path.read_text()
-    except (OSError, UnicodeDecodeError):
+    """Return whether the current runtime declares support for an asset."""
+    if asset_name != "feature_classifier.pkl":
         return False
-    return asset_name in source and any(
-        marker in source for marker in ("pickle.load", "joblib.load", "load_model")
-    )
+    try:
+        from kani.scorer import RUNTIME_FEATURE_CLASSIFIER_SUPPORTED
+    except ImportError:
+        return False
+    return RUNTIME_FEATURE_CLASSIFIER_SUPPORTED
 
 
 def _classifier_asset_result(asset_name: str, models_dir: Path) -> DoctorResult:
     asset_path = models_dir / asset_name
+    if asset_name == "feature_classifier.pkl":
+        from kani.scorer import inspect_feature_classifier_runtime_status
+
+        status = inspect_feature_classifier_runtime_status(models_dir)
+        if not status.exists:
+            return DoctorResult(
+                "warn",
+                asset_name,
+                f"not found at {status.path}; default-only routing mode until a loadable classifier is installed",
+            )
+        if not status.loadable:
+            return DoctorResult(
+                "warn",
+                asset_name,
+                f"present but unloadable at {status.path}; default-only routing mode ({status.message})",
+            )
+        return DoctorResult(
+            "ok",
+            asset_name,
+            "present and loadable by runtime; not proven active until request-time embedding succeeds",
+        )
+
     if not asset_path.exists():
         return DoctorResult(
             "info",
             asset_name,
-            f"not found at {asset_path}; current runtime uses heuristic scorer",
+            f"not found at {asset_path}; legacy classifier is unused by current runtime routing",
         )
 
-    if _runtime_loads_classifier_asset(asset_name):
-        return DoctorResult(
-            "ok",
-            asset_name,
-            "present and explicit runtime loading evidence was found in scorer.py",
-        )
-
-    if asset_name == "tier_classifier.pkl":
-        status = "present but legacy/unused by current runtime routing"
-    else:
-        status = "present but not loaded by current runtime routing"
-    return DoctorResult("warn", asset_name, status)
+    return DoctorResult(
+        "warn",
+        asset_name,
+        "present but legacy/unused by current runtime routing",
+    )
 
 
 def _profile_tier_count(profile: object) -> int:
