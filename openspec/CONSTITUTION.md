@@ -13,6 +13,7 @@ It is intentionally minimal. Implementation details belong in the individual spe
 
 - Runtime routing decisions must be reproducible for the same input and the same configuration.
 - Routing decisions must expose enough information to audit why a model and provider were selected.
+- Runtime prompt classification must not use heuristic keyword, substring, or rule-based semantic classification paths; classification must use the tracked learned classifier or converge to an explicit safe default.
 - The classifier, features, scoring method, and calibration strategy may evolve, but changes must preserve tier meaning and fallback safety.
 - Uncertain or failed routing decisions must converge to explicit fallbacks or safe defaults, not silently drift to unsupported, unexpectedly expensive, or higher-risk models.
 
