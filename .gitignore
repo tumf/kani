@@ -17,3 +17,6 @@ config.yaml
 .env.local
 data/
 models/
+
+# review-gauntlet output
+.review-gauntlet/
