@@ -36,7 +36,7 @@ def _redact_secret_text(value: str) -> str:
     redacted_words: list[str] = []
     for word in value.split():
         lowered = word.lower()
-        if word.startswith(("sk-", "kani_")) or any(
+        if word.startswith(("sk-", "kani_", "kani-")) or any(
             marker in lowered for marker in _SECRET_MARKERS
         ):
             redacted_words.append("***")
@@ -75,9 +75,9 @@ def _classifier_asset_result(asset_name: str, models_dir: Path) -> DoctorResult:
                 f"present but unloadable at {status.path}; default-only routing mode ({status.message})",
             )
         return DoctorResult(
-            "ok",
+            "warn",
             asset_name,
-            "present and loadable by runtime; not proven active until request-time embedding succeeds",
+            "present and loadable by runtime, but request-time embedding was not verified",
         )
 
     if not asset_path.exists():
@@ -210,7 +210,12 @@ def main():
 @main.command()
 @click.option("--config", "config_path", default=None, help="Path to config.yaml")
 @click.option("--host", default=None, help="Bind host (overrides config)")
-@click.option("--port", default=None, type=int, help="Bind port (overrides config)")
+@click.option(
+    "--port",
+    default=None,
+    type=click.IntRange(1, 65535),
+    help="Bind port (overrides config)",
+)
 def serve(config_path: str | None, host: str | None, port: int | None):
     """Start the kani proxy server."""
     import uvicorn
@@ -395,8 +400,10 @@ def init_cmd(output_path: str | None, force: bool):
         click.echo("Use --force to overwrite.")
         raise SystemExit(1)
 
-    os.makedirs(os.path.dirname(target), exist_ok=True)
-    with open(target, "w") as f:
+    target_dir = os.path.dirname(target)
+    if target_dir:
+        os.makedirs(target_dir, exist_ok=True)
+    with open(target, "w", encoding="utf-8") as f:
         f.write(_STARTER_CONFIG)
 
     click.echo(f"Created starter config: {target}")
@@ -417,12 +424,22 @@ def keys_group():
     """Manage API keys for kani proxy access."""
 
 
+def _validate_key_name(name: str) -> str:
+    normalized = name.strip()
+    if not normalized or any(ord(char) < 32 for char in normalized):
+        raise click.ClickException(
+            "API key name must be non-empty and must not contain control characters"
+        )
+    return normalized
+
+
 @keys_group.command("add")
 @click.argument("name")
 def keys_add(name: str):
     """Create a new API key with the given NAME label."""
     from kani.api_keys import generate_key
 
+    name = _validate_key_name(name)
     raw = generate_key(name)
     click.echo(f"Created API key: {name}")
     click.echo()
@@ -451,12 +468,29 @@ def keys_list():
 @click.argument("identifier")
 def keys_remove(identifier: str):
     """Remove an API key by NAME or PREFIX."""
-    from kani.api_keys import remove_key
+    from kani.api_keys import list_keys, remove_key
 
-    if remove_key(identifier):
-        click.echo(f"Removed API key: {identifier}")
+    redacted_identifier = _redact_secret_text(identifier)
+    lookup_identifier = identifier
+    if identifier.startswith("kani-"):
+        lookup_identifier = identifier.removeprefix("kani-")[:8]
+
+    matches = [
+        entry
+        for entry in list_keys()
+        if entry.name == lookup_identifier or entry.prefix == lookup_identifier
+    ]
+    if not matches:
+        click.echo(f"No API key found matching: {redacted_identifier}")
+        raise SystemExit(1)
+    if len(matches) > 1:
+        click.echo(f"Ambiguous API key identifier: {redacted_identifier}")
+        raise SystemExit(1)
+
+    if remove_key(lookup_identifier):
+        click.echo(f"Removed API key: {redacted_identifier}")
     else:
-        click.echo(f"No API key found matching: {identifier}")
+        click.echo(f"No API key found matching: {redacted_identifier}")
         raise SystemExit(1)
 
 

@@ -35,7 +35,9 @@ def set_db_path(path: Path) -> None:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_db_path()), check_same_thread=False)
+    path = _db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -174,6 +176,8 @@ def get_snapshot(snap_hash: str) -> dict[str, Any] | None:
 
 # ── Summary helpers ───────────────────────────────────────────────────────────
 
+_VALID_SUMMARY_STATUSES = {"queued", "running", "ready", "failed", "stale"}
+
 
 def get_ready_summary(session_id: str, snap_hash: str) -> dict[str, Any] | None:
     """Return the most recent ready summary for this session+snapshot, or None."""
@@ -226,6 +230,15 @@ def enqueue_summary(
     sid = uuid.uuid4().hex
     now = time.time()
     with _connect() as conn:
+        snap = conn.execute(
+            "SELECT messages_json FROM compaction_snapshots WHERE snapshot_hash = ?",
+            (snap_hash,),
+        ).fetchone()
+        if snap is None:
+            raise ValueError(f"unknown snapshot hash: {snap_hash}")
+        max_covered = len(json.loads(snap["messages_json"]))
+        if covered_message_count < 0 or covered_message_count > max_covered:
+            raise ValueError("covered_message_count is outside snapshot bounds")
         conn.execute(
             """
             INSERT INTO compaction_summaries
@@ -247,6 +260,9 @@ def update_summary(
     covered_message_count: int | None = None,
     error_message: str | None = None,
 ) -> None:
+    if status not in _VALID_SUMMARY_STATUSES:
+        raise ValueError(f"invalid summary status: {status}")
+
     with _connect() as conn:
         conn.execute(
             """

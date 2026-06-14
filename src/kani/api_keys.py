@@ -45,7 +45,7 @@ def _load_keys() -> list[dict]:
     try:
         data = json.loads(path.read_text())
         if isinstance(data, list):
-            return data
+            return [key for key in data if isinstance(key, dict)]
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to load API keys file: %s", exc)
     return []
@@ -60,7 +60,7 @@ def _save_keys(keys: list[dict]) -> None:
 def generate_key(name: str) -> str:
     """Create a new API key with the given name. Returns the raw key (shown once)."""
     raw = f"kani-{secrets.token_urlsafe(32)}"
-    prefix = raw[:8]
+    prefix = raw.removeprefix("kani-")[:8]
     entry = {"name": name, "key_hash": _hash_key(raw), "prefix": prefix}
 
     keys = _load_keys()
@@ -96,8 +96,14 @@ def remove_key(identifier: str) -> bool:
 
 def validate_key(raw: str) -> bool:
     """Check if a raw API key is valid."""
+    if not raw.startswith("kani-") or len(raw) > 256:
+        return False
     h = _hash_key(raw)
-    return any(k.get("key_hash") == h for k in _load_keys())
+    return any(
+        isinstance(key_hash := k.get("key_hash"), str)
+        and secrets.compare_digest(key_hash, h)
+        for k in _load_keys()
+    )
 
 
 def has_keys() -> bool:

@@ -116,6 +116,7 @@ class TestResolveModel:
         # "eco" only has SIMPLE; requesting COMPLEX should fall back
         decision = router.resolve_model(profile="eco", tier="COMPLEX")
         assert decision.model == "eco-simple"
+        assert decision.tier == "SIMPLE"
 
     def test_round_robin_primary_selection(self):
         from kani.config import (
@@ -251,6 +252,41 @@ class TestSummaryLifecycle:
         enqueue_summary("sess", snap_h)
         # Second check should report inflight
         assert get_inflight_summary("sess", snap_h) is True
+
+    @pytest.mark.parametrize("covered_message_count", [-1, 2])
+    def test_enqueue_rejects_covered_count_outside_snapshot_bounds(
+        self, covered_message_count: int
+    ):
+        from kani.compaction_store import enqueue_summary, save_snapshot
+
+        snap_h = save_snapshot("sess", [{"role": "user", "content": "hi"}])
+
+        with pytest.raises(ValueError, match="covered_message_count"):
+            enqueue_summary("sess", snap_h, covered_message_count=covered_message_count)
+
+    def test_enqueue_rejects_unknown_snapshot(self):
+        from kani.compaction_store import enqueue_summary
+
+        with pytest.raises(ValueError, match="unknown snapshot hash"):
+            enqueue_summary("sess", "missing")
+
+    def test_update_rejects_invalid_status(self):
+        from kani.compaction_store import enqueue_summary, save_snapshot, update_summary
+
+        snap_h = save_snapshot("sess", [{"role": "user", "content": "hi"}])
+        sid = enqueue_summary("sess", snap_h)
+
+        with pytest.raises(ValueError, match="invalid summary status"):
+            update_summary(sid, status="typo")
+
+    def test_db_parent_directory_is_created(self, tmp_path):
+        import kani.compaction_store as store
+
+        missing_db = tmp_path / "fresh" / "nested" / "compaction.db"
+        store.set_db_path(missing_db)
+        store.init_db()
+
+        assert missing_db.exists()
 
     def test_mark_stale(self):
         from kani.compaction_store import (

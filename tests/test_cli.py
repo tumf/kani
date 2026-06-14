@@ -115,6 +115,11 @@ class TestConfigErrors:
         assert result.exit_code != 0
         assert "No kani configuration file found" in result.output
 
+    def test_serve_rejects_invalid_port(self, runner, empty_dir):
+        result = runner.invoke(main, ["serve", "--port", "0"])
+        assert result.exit_code != 0
+        assert "Invalid value for '--port'" in result.output
+
     def test_config_no_config_shows_friendly_error(self, runner, empty_dir):
         result = runner.invoke(main, ["config"])
         assert result.exit_code != 0
@@ -475,6 +480,90 @@ model_capabilities:
         )
         assert "Traceback" not in result.output
 
+    def test_keys_add_rejects_empty_label(self, runner, empty_dir) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            result = runner.invoke(main, ["keys", "add", "   "])
+
+            assert result.exit_code != 0
+            assert "API key name must be non-empty" in result.output
+        finally:
+            monkeypatch.undo()
+
+    def test_keys_add_rejects_control_character_label(self, runner, empty_dir) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            result = runner.invoke(main, ["keys", "add", "bad\nname"])
+
+            assert result.exit_code != 0
+            assert "must not contain control characters" in result.output
+        finally:
+            monkeypatch.undo()
+
+    def test_keys_add_strips_label(self, runner, empty_dir) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            result = runner.invoke(main, ["keys", "add", "  display-name  "])
+
+            assert result.exit_code == 0
+            assert "Created API key: display-name" in result.output
+            assert "  display-name  " not in result.output
+        finally:
+            monkeypatch.undo()
+
+    def test_keys_remove_rejects_ambiguous_identifier(self, runner, empty_dir) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            first = runner.invoke(main, ["keys", "add", "duplicate"])
+            second = runner.invoke(main, ["keys", "add", "duplicate"])
+            assert first.exit_code == 0
+            assert second.exit_code == 0
+
+            result = runner.invoke(main, ["keys", "remove", "duplicate"])
+
+            assert result.exit_code != 0
+            assert "Ambiguous API key identifier: duplicate" in result.output
+        finally:
+            monkeypatch.undo()
+
+    def test_keys_remove_redacts_secret_shaped_identifier(
+        self, runner, empty_dir
+    ) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            result = runner.invoke(main, ["keys", "remove", "kani-raw-secret"])
+
+            assert result.exit_code != 0
+            assert "kani-raw-secret" not in result.output
+            assert "No API key found matching: ***" in result.output
+        finally:
+            monkeypatch.undo()
+
+    def test_keys_remove_accepts_raw_key_when_name_is_ambiguous(
+        self, runner, empty_dir
+    ) -> None:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("KANI_DATA_DIR", str(empty_dir / "data"))
+        try:
+            first = runner.invoke(main, ["keys", "add", "duplicate"])
+            second = runner.invoke(main, ["keys", "add", "duplicate"])
+            assert first.exit_code == 0
+            assert second.exit_code == 0
+            raw_key = first.output.splitlines()[2].strip()
+
+            result = runner.invoke(main, ["keys", "remove", raw_key])
+
+            assert result.exit_code == 0
+            assert raw_key not in result.output
+            assert "Removed API key: ***" in result.output
+        finally:
+            monkeypatch.undo()
+
     def test_classifier_asset_runtime_check_uses_runtime_marker(self) -> None:
         assert _runtime_loads_classifier_asset("feature_classifier.pkl") is True
         assert _runtime_loads_classifier_asset("tier_classifier.pkl") is False
@@ -499,6 +588,11 @@ class TestInitCommand:
         result = runner.invoke(main, ["init", "--path", str(target)])
         assert result.exit_code == 0
         assert target.exists()
+
+    def test_init_bare_relative_path(self, runner, empty_dir):
+        result = runner.invoke(main, ["init", "--path", "config.yaml"])
+        assert result.exit_code == 0
+        assert (empty_dir / "config.yaml").exists()
 
     def test_init_refuses_overwrite(self, runner, empty_dir):
         xdg_dir = empty_dir / "xdg_config"

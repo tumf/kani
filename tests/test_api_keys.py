@@ -28,6 +28,11 @@ class TestApiKeyLifecycle:
         generate_key("test-key")
         assert validate_key("bogus-key") is False
 
+    def test_malformed_or_oversized_key_rejected(self):
+        generate_key("test-key")
+        assert validate_key("bogus-key") is False
+        assert validate_key("kani-" + "x" * 252) is False
+
     def test_list_keys(self):
         generate_key("alpha")
         generate_key("beta")
@@ -44,7 +49,7 @@ class TestApiKeyLifecycle:
 
     def test_remove_by_prefix(self):
         raw = generate_key("prefixed")
-        prefix = raw[:8]
+        prefix = raw.removeprefix("kani-")[:8]
         assert remove_key(prefix) is True
         assert validate_key(raw) is False
 
