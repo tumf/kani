@@ -17,3 +17,7 @@ config.yaml
 .env.local
 data/
 models/
+
+.review-gauntlet/
+!.review-gauntlet/checkpoints/
+
