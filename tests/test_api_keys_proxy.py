@@ -340,7 +340,10 @@ class TestProxyFallbackBehavior:
         ]
 
     @pytest.mark.asyncio
-    async def test_retryable_failure_and_success_update_backoff_state(self):
+    @pytest.mark.parametrize("status_code", [400, 401, 402, 403, 404, 429, 502])
+    async def test_retryable_failure_and_success_update_backoff_state(
+        self, status_code
+    ):
         decision = RoutingDecision(
             model="model-primary",
             provider="primary-provider",
@@ -386,7 +389,7 @@ class TestProxyFallbackBehavior:
             )
             call_count += 1
             if call_count == 1:
-                return JSONResponse(status_code=502, content={"error": "retry"})
+                return JSONResponse(status_code=status_code, content={"error": "retry"})
             return JSONResponse(status_code=200, content={"ok": True})
 
         with patch("kani.proxy._proxy_upstream", side_effect=fake_proxy_upstream):
