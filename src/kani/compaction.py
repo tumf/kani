@@ -71,7 +71,10 @@ def _estimate_tokens(messages: list[dict[str, Any]], model: str | None = None) -
     """
     enc = _get_encoder(model)
     if enc is not None:
-        total = sum(len(enc.encode(str(m.get("content", "")))) for m in messages)
+        total = sum(
+            len(enc.encode(str(m.get("content", "")), allowed_special="all"))
+            for m in messages
+        )
     else:
         total_chars = sum(len(str(m.get("content", ""))) for m in messages)
         total = total_chars // _CHARS_PER_TOKEN
