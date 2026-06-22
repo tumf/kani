@@ -618,6 +618,80 @@ class TestAdminReloadAuth:
 
 
 class TestProxyRoutingErrors:
+    def test_chat_completions_requires_messages(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/v1/chat/completions", json={"model": "kani/auto"})
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages is required"
+
+    def test_route_debug_requires_messages(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/v1/route", json={"profile": "auto"})
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages is required"
+
+    def test_chat_completions_rejects_non_object_json(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/v1/chat/completions", json=[])
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "JSON body must be an object"
+
+    def test_chat_completions_requires_messages_array(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "kani/auto", "messages": "hello"},
+            )
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages must be an array"
+
+    def test_chat_completions_requires_message_objects(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "kani/auto", "messages": ["bad"]},
+            )
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages must contain only objects"
+
+    def test_route_debug_rejects_non_object_json(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post("/v1/route", json=[])
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "JSON body must be an object"
+
+    def test_route_debug_requires_messages_array(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/route", json={"profile": "auto", "messages": "hello"}
+            )
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages must be an array"
+
+    def test_route_debug_requires_message_objects(self, configured_proxy) -> None:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/route", json={"profile": "auto", "messages": ["bad"]}
+            )
+
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert payload["error"]["message"] == "messages must contain only objects"
+
     def test_chat_completions_returns_structured_input_limit_error(
         self, tmp_path: Path
     ) -> None:

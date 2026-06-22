@@ -165,14 +165,31 @@ class Router:
             profile=profile,
         )
 
-        tier: str = classification.get("tier") or _DEFAULT_TIER
-        score: float = classification.get("score", 0.5)
-        confidence: float = classification.get("confidence", 0.5)
-        signals: list[str] = classification.get("signals", [])
-        signal_details: dict[str, Any] | list[str] = classification.get(
-            "signal_details", signals
+        tier = str(classification.get("tier") or _DEFAULT_TIER)
+        if tier not in _TIER_ORDER:
+            log.warning(
+                "Invalid scorer tier %r, falling back to %s", tier, _DEFAULT_TIER
+            )
+            tier = _DEFAULT_TIER
+        score = self._coerce_probability(classification.get("score", 0.5), 0.5)
+        confidence = self._coerce_probability(
+            classification.get("confidence", 0.5), 0.5
         )
-        agentic_score: float = classification.get("agentic_score", 0.0)
+        raw_signals = classification.get("signals", [])
+        signals = (
+            [str(signal) for signal in raw_signals]
+            if isinstance(raw_signals, list)
+            else []
+        )
+        raw_signal_details = classification.get("signal_details", signals)
+        signal_details: dict[str, Any] | list[str] = (
+            raw_signal_details
+            if isinstance(raw_signal_details, dict | list)
+            else signals
+        )
+        agentic_score = self._coerce_probability(
+            classification.get("agentic_score", 0.0), 0.0
+        )
 
         # --- Override tier for agentic profile if agentic_score is high ---
         if profile == "agentic" and agentic_score > 0.6 and tier == "SIMPLE":
@@ -446,7 +463,7 @@ class Router:
             provider=provider_name,
             base_url=provider_cfg.base_url,
             api_key=resolve_env(provider_cfg.api_key),
-            tier=tier,
+            tier=resolved_tier,
             score=0.0,
             confidence=0.0,
             signals=[],
@@ -571,6 +588,14 @@ class Router:
                 capable.append(candidate)
 
         return capable
+
+    @staticmethod
+    def _coerce_probability(value: Any, default: float) -> float:
+        try:
+            probability = float(value)
+        except (TypeError, ValueError):
+            return default
+        return min(max(probability, 0.0), 1.0)
 
     @staticmethod
     def _normalize_candidates(
@@ -729,11 +754,8 @@ class Router:
         return self.config.default_provider
 
     def _lookup_provider(self, provider_name: str) -> ProviderConfig:
-        """Look up a ProviderConfig by name, falling back to default."""
+        """Look up a ProviderConfig by name."""
         provider_cfg = self.config.providers.get(provider_name)
-        if provider_cfg is None:
-            # Try default provider
-            provider_cfg = self.config.providers.get(self.config.default_provider)
         if provider_cfg is None:
             raise ValueError(f"Provider '{provider_name}' not found in config")
         return provider_cfg

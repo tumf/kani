@@ -1693,12 +1693,20 @@ async def chat_completions(request: Request):
     state = _require_runtime_state()
 
     try:
-        body: dict[str, Any] = await request.json()
+        body = await request.json()
     except Exception:
         return _openai_error(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        return _openai_error(400, "JSON body must be an object")
 
-    model_field: str = body.get("model", "")
-    messages = body.get("messages", [])
+    model_field = str(body.get("model", ""))
+    if "messages" not in body:
+        return _openai_error(400, "messages is required")
+    messages = body["messages"]
+    if not isinstance(messages, list):
+        return _openai_error(400, "messages must be an array")
+    if not all(isinstance(message, dict) for message in messages):
+        return _openai_error(400, "messages must contain only objects")
 
     if model_field.startswith("kani/"):
         # ── Routed request ────────────────────────────────────────────────
@@ -2059,8 +2067,16 @@ async def route_debug(request: Request):
         body = await request.json()
     except Exception:
         return _openai_error(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        return _openai_error(400, "JSON body must be an object")
 
-    messages = body.get("messages", [])
+    if "messages" not in body:
+        return _openai_error(400, "messages is required")
+    messages = body["messages"]
+    if not isinstance(messages, list):
+        return _openai_error(400, "messages must be an array")
+    if not all(isinstance(message, dict) for message in messages):
+        return _openai_error(400, "messages must contain only objects")
     profile = body.get("profile", None)
     tools_capability_decision = _decide_tools_capability(
         body,

@@ -34,6 +34,31 @@ def _make_config() -> KaniConfig:
 
 
 class TestRouterLogging:
+    def test_route_sanitizes_invalid_classification_values(self) -> None:
+        router = Router(_make_config())
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "UNKNOWN",
+                "score": "bad",
+                "confidence": 2,
+                "signals": {"bad": "shape"},
+                "signal_details": "bad",
+                "agentic_score": -1,
+            },
+        ):
+            decision = router.route(
+                [{"role": "user", "content": "hello"}], profile="agentic"
+            )
+
+        assert decision.tier == "MEDIUM"
+        assert decision.score == 0.5
+        assert decision.confidence == 1.0
+        assert decision.signals == []
+        assert decision.agentic_score == 0.0
+
     def test_route_uses_context_aware_classification_input_for_short_followup(
         self,
     ) -> None:
@@ -137,6 +162,49 @@ class TestRouterLogging:
         context = mock_log.call_args.kwargs["context"]
         assert context["text"]
         assert "Open the repo and update the config file" in context["text"]
+
+    def test_unknown_provider_raises_error(self) -> None:
+        config = KaniConfig(
+            providers={
+                "openrouter": ProviderConfig(
+                    name="openrouter",
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key="test-key",
+                )
+            },
+            default_provider="openrouter",
+            profiles={
+                "agentic": ProfileConfig(
+                    tiers={
+                        "SIMPLE": TierModelConfig(
+                            primary="model-simple",
+                            provider="missing-provider",
+                        ),
+                    }
+                )
+            },
+            default_profile="agentic",
+        )
+        router = Router(config)
+
+        with patch.object(
+            Router,
+            "_classify",
+            return_value={
+                "tier": "SIMPLE",
+                "score": 0.1,
+                "confidence": 0.9,
+                "signals": [],
+                "signal_details": [],
+                "agentic_score": 0.0,
+            },
+        ):
+            try:
+                router.route([{"role": "user", "content": "hi"}], profile="agentic")
+            except ValueError as exc:
+                assert "Provider 'missing-provider' not found in config" in str(exc)
+            else:
+                raise AssertionError("expected ValueError for unknown provider")
 
     def test_round_robin_primary_selection_per_profile_tier(self) -> None:
         config = KaniConfig(

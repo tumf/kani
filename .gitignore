@@ -18,6 +18,6 @@ config.yaml
 data/
 models/
 
+# review-gauntlet output
 .review-gauntlet/
 !.review-gauntlet/checkpoints/
-

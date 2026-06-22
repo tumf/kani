@@ -3,12 +3,11 @@ FROM python:3.13-slim AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md config.yaml ./
 COPY src/ src/
 COPY data/ data/
 
-# uv.lock may not exist yet
-COPY uv.loc* ./
+COPY uv.lock ./
 
 RUN uv sync --no-dev --frozen 2>/dev/null || uv sync --no-dev
 
