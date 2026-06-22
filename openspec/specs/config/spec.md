@@ -86,7 +86,7 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 
 ### Requirement: 設定スキーマ
 
-設定は以下の構造に従わなければならない (SHALL)。Profile tier model entries MAY include optional `max_input_tokens` metadata for routing-time input-limit candidate filtering.
+設定は以下の構造に従わなければならない (SHALL)。Profile tier model entries MAY include optional `max_input_tokens` metadata for routing-time input-limit candidate filtering. Configuration MUST expose a tools capability detection policy with a backward-compatible default of `declared`.
 
 #### Scenario: トップレベル設定
 
@@ -161,6 +161,27 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 - WHEN 設定を読み込む
 - THEN システムはこの compaction 設定を従来通り受理する
 - AND この値を per-model `max_input_tokens` として扱ってはならない
+
+#### Scenario: tools capability detection policy defaults to declared
+
+**Given** a configuration does not specify a tools capability detection policy
+**When** the configuration is loaded
+**Then** kani MUST use `declared` as the tools capability detection policy
+**And** requests containing `tools` or `functions` declarations MUST keep requiring the `tools` capability by default
+
+#### Scenario: active tools capability detection policy is accepted
+
+**Given** a configuration explicitly sets the tools capability detection policy to `active`
+**When** the configuration is loaded
+**Then** kani MUST preserve that policy for routing-time capability detection
+**And** kani MUST NOT require operators to change `model_rules` capability metadata to use the policy
+
+#### Scenario: invalid tools capability detection policy is rejected
+
+**Given** a configuration sets the tools capability detection policy to an unsupported value
+**When** the configuration is validated
+**Then** kani MUST reject the configuration as invalid
+**And** the invalid value MUST NOT silently fall back to either `declared` or `active`
 
 ### Requirement: モデルメタデータ規則
 
