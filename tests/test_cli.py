@@ -177,6 +177,67 @@ profiles:
         cfg = load_config(str(config_path), strict=True)
         assert cfg.profiles["auto"].tiers["SIMPLE"].fallback == []
 
+    def test_tools_capability_detection_defaults_to_declared(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+"""
+        )
+        cfg = load_config(str(config_path), strict=True)
+        assert cfg.smart_proxy.tools_capability_detection == "declared"
+
+    def test_tools_capability_detection_accepts_active(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+smart_proxy:
+  tools_capability_detection: active
+"""
+        )
+        cfg = load_config(str(config_path), strict=True)
+        assert cfg.smart_proxy.tools_capability_detection == "active"
+
+    def test_tools_capability_detection_rejects_invalid_values(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+smart_proxy:
+  tools_capability_detection: sometimes
+"""
+        )
+        with pytest.raises(ValueError):
+            load_config(str(config_path), strict=True)
+
 
 class TestAuxLLMProviderConfig:
     def test_llm_classifier_rejects_deprecated_connection_fields(self) -> None:
