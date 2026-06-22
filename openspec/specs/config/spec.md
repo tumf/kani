@@ -86,7 +86,7 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 
 ### Requirement: 設定スキーマ
 
-設定は以下の構造に従わなければならない (SHALL)。Profile tier model entries MAY include optional `max_input_tokens` metadata for routing-time input-limit candidate filtering. Configuration MUST expose a tools capability detection policy with a backward-compatible default of `declared`.
+設定は以下の構造に従わなければならない (SHALL)。Profile tier model entries MAY include optional `max_input_tokens` metadata for routing-time input-limit candidate filtering. Configuration MUST expose a tools capability detection policy with a backward-compatible default of `declared`. Configuration MUST also expose a decorative tool schema handling policy with a backward-compatible default that preserves upstream payloads unchanged.
 
 #### Scenario: トップレベル設定
 
@@ -182,6 +182,27 @@ YAML 設定ファイルの読み込み、環境変数プレースホルダーの
 **When** the configuration is validated
 **Then** kani MUST reject the configuration as invalid
 **And** the invalid value MUST NOT silently fall back to either `declared` or `active`
+
+#### Scenario: decorative tool schema handling defaults to preserve
+
+**Given** a configuration does not specify decorative tool schema handling
+**When** the configuration is loaded
+**Then** kani MUST use `preserve` as the decorative tool schema handling policy
+**And** routed upstream payloads MUST preserve top-level `tools`, `functions`, `tool_choice`, and `function_call` fields unless another explicit policy is configured
+
+#### Scenario: decorative tool schema stripping policy is accepted
+
+**Given** a configuration explicitly sets decorative tool schema handling to `strip`
+**When** the configuration is loaded
+**Then** kani MUST preserve that policy for routed upstream payload adaptation
+**And** kani MUST NOT require operators to change `model_rules` capability metadata to use the policy
+
+#### Scenario: invalid decorative tool schema handling policy is rejected
+
+**Given** a configuration sets decorative tool schema handling to an unsupported value
+**When** the configuration is validated
+**Then** kani MUST reject the configuration as invalid
+**And** the invalid value MUST NOT silently fall back to either `preserve` or `strip`
 
 ### Requirement: モデルメタデータ規則
 
