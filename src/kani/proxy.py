@@ -668,6 +668,24 @@ def _parse_successful_failure(payload: Any) -> tuple[int, str, str] | None:
     if error_type.lower() == "overloaded_error" or message.lower() == "overloaded":
         return 529, message or "Overloaded", "overloaded_error"
 
+    code = error.get("code") or ""
+    status = int(error.get("status") or error.get("status_code") or 0)
+    if not status:
+        code_lower = str(code).lower()
+        if "blocked" in code_lower or "spending" in code_lower or "limit" in code_lower:
+            status = 403
+        elif code_lower:
+            status = 500
+    if status:
+        return (
+            status,
+            message or str(code) or "Upstream error",
+            error_type or "upstream_error",
+        )
+
+    if message:
+        return 500, message, error_type or "upstream_error"
+
     return None
 
 
@@ -697,7 +715,14 @@ def _record_retryable_failure(
 ) -> None:
     """Record retryable failure for future cooldown filtering."""
     try:
-        state.fallback_backoff_state.record_retryable_failure(model, provider)
+        delay_seconds = None
+        if status_code in {401, 402, 403}:
+            delay_seconds = state.config.smart_proxy.fallback_backoff.max_delay_seconds
+        state.fallback_backoff_state.record_retryable_failure(
+            model,
+            provider,
+            delay_seconds=delay_seconds,
+        )
     except Exception:
         logger.exception(
             "Failed to apply fallback cooldown model=%s provider=%s status=%d",
