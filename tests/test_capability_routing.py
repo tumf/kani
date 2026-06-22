@@ -167,6 +167,69 @@ class TestCapabilityDetection:
         assert decision.trigger == "declaration_ignored"
         assert "tools" not in caps
 
+    def test_decorative_tool_schema_adaptation_strips_copy_only(self) -> None:
+        """Strip mode should remove only top-level decorative tool fields."""
+        from kani.proxy import (
+            _adapt_decorative_tool_schema_payload,
+            _decide_tools_capability,
+        )
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Simple question"}],
+            "tools": [{"type": "function", "function": {"name": "sensitive"}}],
+            "functions": [{"name": "legacy_sensitive"}],
+            "tool_choice": "auto",
+            "function_call": "auto",
+            "temperature": 0.2,
+        }
+        decision = _decide_tools_capability(body, "active")
+
+        adapted, audit = _adapt_decorative_tool_schema_payload(body, decision, "strip")
+
+        assert adapted is not body
+        assert body["tools"][0]["function"]["name"] == "sensitive"
+        assert adapted == {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Simple question"}],
+            "temperature": 0.2,
+        }
+        assert audit.applied is True
+        assert audit.stripped_fields == (
+            "tools",
+            "functions",
+            "tool_choice",
+            "function_call",
+        )
+
+    @pytest.mark.parametrize(
+        "policy",
+        ["preserve", "strip"],
+    )
+    def test_decorative_tool_schema_adaptation_preserves_when_required(
+        self, policy: str
+    ) -> None:
+        """Forced tool use should preserve fields even when strip is configured."""
+        from kani.proxy import (
+            _adapt_decorative_tool_schema_payload,
+            _decide_tools_capability,
+        )
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Use the tool"}],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+            "tool_choice": "required",
+        }
+        decision = _decide_tools_capability(body, "active")
+
+        adapted, audit = _adapt_decorative_tool_schema_payload(body, decision, policy)
+
+        assert adapted is not body
+        assert adapted == body
+        assert audit.applied is False
+        assert audit.stripped_fields == ()
+
     def test_detect_json_mode_capability(self) -> None:
         """JSON mode capability should be detected when response_format is json."""
         from kani.proxy import _detect_required_capabilities

@@ -291,6 +291,14 @@ class SmartProxyConfig(BaseModel):
             "'active' ignores decorative schemas unless tool use is explicit or active."
         ),
     )
+    decorative_tool_schema_handling: Literal["preserve", "strip"] = Field(
+        default="preserve",
+        description=(
+            "Policy for forwarding decorative top-level tool schemas upstream. "
+            "'preserve' keeps OpenAI-compatible payloads unchanged; 'strip' removes "
+            "top-level tool schema fields only when tool use is declared but not required."
+        ),
+    )
     context_compaction: ContextCompactionConfig = Field(
         default_factory=ContextCompactionConfig
     )
