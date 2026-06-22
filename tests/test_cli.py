@@ -238,6 +238,67 @@ smart_proxy:
         with pytest.raises(ValueError):
             load_config(str(config_path), strict=True)
 
+    def test_decorative_tool_schema_handling_defaults_to_preserve(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+"""
+        )
+        cfg = load_config(str(config_path), strict=True)
+        assert cfg.smart_proxy.decorative_tool_schema_handling == "preserve"
+
+    def test_decorative_tool_schema_handling_accepts_strip(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+smart_proxy:
+  decorative_tool_schema_handling: strip
+"""
+        )
+        cfg = load_config(str(config_path), strict=True)
+        assert cfg.smart_proxy.decorative_tool_schema_handling == "strip"
+
+    def test_decorative_tool_schema_handling_rejects_invalid_values(self, empty_dir):
+        config_path = empty_dir / "config.yaml"
+        config_path.write_text(
+            """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: model-a
+smart_proxy:
+  decorative_tool_schema_handling: rewrite
+"""
+        )
+        with pytest.raises(ValueError):
+            load_config(str(config_path), strict=True)
+
 
 class TestAuxLLMProviderConfig:
     def test_llm_classifier_rejects_deprecated_connection_fields(self) -> None:

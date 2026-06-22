@@ -38,8 +38,18 @@ default_profile: auto
 # Use active for OpenCode-style clients that attach full schemas to ordinary
 # conversation turns; tool-required requests still fail closed.
 #
+# `decorative_tool_schema_handling` controls the upstream payload for schemas
+# that active detection has already classified as non-required/decorative:
+#   - preserve (default): forward `tools`, legacy `functions`, `tool_choice`,
+#     and legacy `function_call` exactly as the client sent them
+#   - strip (opt-in): remove only those top-level fields from the upstream copy
+#     when schemas are declared but not required. Never strips forced tool use,
+#     active tool history, or message-level `tool_calls` / tool responses.
+# Use strip only when a selected provider/model rejects decorative schema fields.
+#
 # smart_proxy:
-#   tools_capability_detection: declared  # declared | active
+#   tools_capability_detection: declared       # declared | active
+#   decorative_tool_schema_handling: preserve  # preserve | strip
 #
 # Context compaction is optional — all features disabled by default.
 # Uncomment and adjust to enable inline and/or background context compaction.

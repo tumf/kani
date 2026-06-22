@@ -97,6 +97,17 @@ class ToolsCapabilityDecision:
     trigger: str
 
 
+@dataclass(frozen=True)
+class DecorativeToolSchemaAdaptation:
+    """Audit metadata for upstream decorative tool schema handling."""
+
+    policy: str
+    declared: bool
+    required: bool
+    applied: bool
+    stripped_fields: tuple[str, ...]
+
+
 _state: RuntimeState | None = None
 # Backward-compat module globals (kept in sync with _state)
 _config: KaniConfig | None = None
@@ -309,15 +320,20 @@ def _has_tool_declarations(body: dict[str, Any]) -> bool:
 def _tool_choice_requires_tools(body: dict[str, Any]) -> bool:
     """Return True when request fields explicitly force tool/function use."""
     tool_choice = body.get("tool_choice")
+    tool_choice_forced = False
     if isinstance(tool_choice, str):
-        return tool_choice not in {"auto", "none"}
-    if isinstance(tool_choice, dict):
-        return True
+        tool_choice_forced = tool_choice not in {"auto", "none"}
+    elif isinstance(tool_choice, dict):
+        tool_choice_forced = True
 
     function_call = body.get("function_call")
+    function_call_forced = False
     if isinstance(function_call, str):
-        return function_call not in {"auto", "none"}
-    return isinstance(function_call, dict)
+        function_call_forced = function_call not in {"auto", "none"}
+    elif isinstance(function_call, dict):
+        function_call_forced = True
+
+    return tool_choice_forced or function_call_forced
 
 
 def _latest_user_message_index(messages: list[Any]) -> int:
@@ -396,6 +412,66 @@ def _decide_tools_capability(
         required=False,
         trigger="declaration_ignored" if declared else "none",
     )
+
+
+_DECORATIVE_TOOL_SCHEMA_FIELDS = ("tools", "functions", "tool_choice", "function_call")
+
+
+def _adapt_decorative_tool_schema_payload(
+    body: dict[str, Any],
+    tools_decision: ToolsCapabilityDecision,
+    handling_policy: str = "preserve",
+) -> tuple[dict[str, Any], DecorativeToolSchemaAdaptation]:
+    """Return an upstream payload copy adapted for decorative tool schemas.
+
+    Only top-level schema/control fields are removed, and only when the existing
+    tools capability decision has already classified declarations as decorative.
+    """
+    if handling_policy not in {"preserve", "strip"}:
+        raise ValueError(
+            f"Unsupported decorative tool schema handling policy: {handling_policy}"
+        )
+
+    should_strip = (
+        handling_policy == "strip"
+        and tools_decision.declared
+        and not tools_decision.required
+    )
+    stripped_fields = tuple(
+        field for field in _DECORATIVE_TOOL_SCHEMA_FIELDS if field in body
+    )
+    if not should_strip:
+        return dict(body), DecorativeToolSchemaAdaptation(
+            policy=handling_policy,
+            declared=tools_decision.declared,
+            required=tools_decision.required,
+            applied=False,
+            stripped_fields=(),
+        )
+
+    adapted_body = {
+        key: value for key, value in body.items() if key not in stripped_fields
+    }
+    return adapted_body, DecorativeToolSchemaAdaptation(
+        policy=handling_policy,
+        declared=tools_decision.declared,
+        required=tools_decision.required,
+        applied=True,
+        stripped_fields=stripped_fields,
+    )
+
+
+def _decorative_tool_schema_adaptation_payload(
+    adaptation: DecorativeToolSchemaAdaptation,
+) -> dict[str, Any]:
+    """Return JSON-safe audit metadata without schema names or contents."""
+    return {
+        "policy": adaptation.policy,
+        "declared": adaptation.declared,
+        "required": adaptation.required,
+        "applied": adaptation.applied,
+        "stripped_fields": list(adaptation.stripped_fields),
+    }
 
 
 def _detect_required_capabilities(
@@ -1713,6 +1789,23 @@ async def chat_completions(request: Request):
             body = dict(body)
             body["messages"] = compaction_result.messages
 
+        body, decorative_tool_schema_adaptation = _adapt_decorative_tool_schema_payload(
+            body,
+            tools_capability_decision,
+            state.config.smart_proxy.decorative_tool_schema_handling,
+        )
+        logger.info(
+            "DECORATIVE_TOOL_SCHEMA policy=%s declared=%s required=%s applied=%s stripped_fields=%s request_id=%s profile=%s state_version=%d",
+            decorative_tool_schema_adaptation.policy,
+            decorative_tool_schema_adaptation.declared,
+            decorative_tool_schema_adaptation.required,
+            decorative_tool_schema_adaptation.applied,
+            list(decorative_tool_schema_adaptation.stripped_fields),
+            request_id,
+            profile_name,
+            state.version,
+        )
+
         fallback_body_base = copy.deepcopy(body)
 
         # Replace the model field with the actual model name
@@ -2013,6 +2106,12 @@ async def route_debug(request: Request):
         )
         return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
+    _, decorative_tool_schema_adaptation = _adapt_decorative_tool_schema_payload(
+        body,
+        tools_capability_decision,
+        state.config.smart_proxy.decorative_tool_schema_handling,
+    )
+
     payload = decision.model_dump()
     payload["tools_capability_detection"] = {
         "policy": tools_capability_decision.policy,
@@ -2020,6 +2119,9 @@ async def route_debug(request: Request):
         "required": tools_capability_decision.required,
         "trigger": tools_capability_decision.trigger,
     }
+    payload["decorative_tool_schema_handling"] = (
+        _decorative_tool_schema_adaptation_payload(decorative_tool_schema_adaptation)
+    )
     return payload
 
 
