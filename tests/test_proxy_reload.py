@@ -34,6 +34,7 @@ def _config_text(
     compaction_enabled: bool = False,
     compaction_concurrency: int = 2,
     fallback_backoff_enabled: bool = False,
+    tools_capability_detection: str | None = None,
     input_limit_too_small: bool = False,
     primary_model: str = "auto-simple",
     fallback_models: str = "[]",
@@ -73,6 +74,10 @@ def _config_text(
     multiplier: 2
     max_delay_seconds: 60
 """
+        )
+    if tools_capability_detection is not None:
+        smart_proxy_sections.append(
+            f"  tools_capability_detection: {tools_capability_detection}\n"
         )
 
     smart_proxy = ""
@@ -628,6 +633,38 @@ class TestProxyRoutingErrors:
         payload = resp.json()
         assert payload["error"]["type"] == "input_limit_not_satisfied"
         assert "No input-limit-eligible model candidate" in payload["error"]["message"]
+
+    def test_route_debug_exposes_tools_policy_without_schema_contents(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(_config_text(tools_capability_detection="active"))
+        configure(str(path))
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/route",
+                json={
+                    "profile": "auto",
+                    "messages": [{"role": "user", "content": "hello world"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {"name": "sensitive_internal_tool"},
+                        }
+                    ],
+                },
+            )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["tools_capability_detection"] == {
+            "policy": "active",
+            "declared": True,
+            "required": False,
+            "trigger": "declaration_ignored",
+        }
+        assert "sensitive_internal_tool" not in resp.text
 
 
 class TestAdminReloadBehavior:

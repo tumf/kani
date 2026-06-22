@@ -87,6 +87,16 @@ class RuntimeState:
     version: int
 
 
+@dataclass(frozen=True)
+class ToolsCapabilityDecision:
+    """Auditable result of policy-based tools capability detection."""
+
+    policy: str
+    declared: bool
+    required: bool
+    trigger: str
+
+
 _state: RuntimeState | None = None
 # Backward-compat module globals (kept in sync with _state)
 _config: KaniConfig | None = None
@@ -291,7 +301,106 @@ def _openai_error(
     )
 
 
-def _detect_required_capabilities(body: dict[str, Any]) -> set[str]:
+def _has_tool_declarations(body: dict[str, Any]) -> bool:
+    """Return True when the request declares OpenAI tools/functions schemas."""
+    return "tools" in body or "functions" in body
+
+
+def _tool_choice_requires_tools(body: dict[str, Any]) -> bool:
+    """Return True when request fields explicitly force tool/function use."""
+    tool_choice = body.get("tool_choice")
+    if isinstance(tool_choice, str):
+        return tool_choice not in {"auto", "none"}
+    if isinstance(tool_choice, dict):
+        return True
+
+    function_call = body.get("function_call")
+    if isinstance(function_call, str):
+        return function_call not in {"auto", "none"}
+    return isinstance(function_call, dict)
+
+
+def _latest_user_message_index(messages: list[Any]) -> int:
+    """Return the latest user message index, or -1 when no user message exists."""
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return idx
+    return -1
+
+
+def _message_has_tool_activity(message: dict[str, Any]) -> bool:
+    """Return True for assistant/tool messages that indicate active tool state."""
+    role = message.get("role")
+    if role in {"tool", "function"}:
+        return True
+    if role == "assistant":
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            return True
+        return "function_call" in message and message.get("function_call") is not None
+    return False
+
+
+def _has_active_tool_history(body: dict[str, Any]) -> bool:
+    """Return True when recent message history after the latest user has tool state."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    latest_user_idx = _latest_user_message_index(messages)
+    recent_messages = messages[latest_user_idx + 1 :]
+    return any(
+        isinstance(message, dict) and _message_has_tool_activity(message)
+        for message in recent_messages
+    )
+
+
+def _decide_tools_capability(
+    body: dict[str, Any], policy: str = "declared"
+) -> ToolsCapabilityDecision:
+    """Apply the configured tools capability policy to a request body."""
+    if policy not in {"declared", "active"}:
+        raise ValueError(f"Unsupported tools capability detection policy: {policy}")
+
+    declared = _has_tool_declarations(body)
+    if policy == "declared":
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=declared,
+            trigger="declaration" if declared else "none",
+        )
+
+    forced = _tool_choice_requires_tools(body)
+    if forced:
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=True,
+            trigger="forced_choice",
+        )
+
+    active_history = _has_active_tool_history(body)
+    if active_history:
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=True,
+            trigger="active_history",
+        )
+
+    return ToolsCapabilityDecision(
+        policy=policy,
+        declared=declared,
+        required=False,
+        trigger="declaration_ignored" if declared else "none",
+    )
+
+
+def _detect_required_capabilities(
+    body: dict[str, Any], tools_policy: str = "declared"
+) -> set[str]:
     """Detect required capabilities from request body.
 
     Returns:
@@ -311,8 +420,8 @@ def _detect_required_capabilities(body: dict[str, Any]) -> set[str]:
                             required.add("vision")
                             break
 
-    # Check for tools/functions capability
-    if "tools" in body or "functions" in body:
+    tools_decision = _decide_tools_capability(body, tools_policy)
+    if tools_decision.required:
         required.add("tools")
 
     # Check for json_mode capability
@@ -1521,7 +1630,24 @@ async def chat_completions(request: Request):
         request_id = uuid.uuid4().hex[:12]
 
         # Detect required capabilities from request body
-        required_capabilities = _detect_required_capabilities(body)
+        tools_capability_decision = _decide_tools_capability(
+            body,
+            state.config.smart_proxy.tools_capability_detection,
+        )
+        required_capabilities = _detect_required_capabilities(
+            body,
+            state.config.smart_proxy.tools_capability_detection,
+        )
+        logger.info(
+            "TOOLS_CAPABILITY policy=%s declared=%s required=%s trigger=%s request_id=%s profile=%s state_version=%d",
+            tools_capability_decision.policy,
+            tools_capability_decision.declared,
+            tools_capability_decision.required,
+            tools_capability_decision.trigger,
+            request_id,
+            profile_name,
+            state.version,
+        )
 
         try:
             decision: RoutingDecision = state.router.route(
@@ -1843,9 +1969,33 @@ async def route_debug(request: Request):
 
     messages = body.get("messages", [])
     profile = body.get("profile", None)
+    tools_capability_decision = _decide_tools_capability(
+        body,
+        state.config.smart_proxy.tools_capability_detection,
+    )
+    required_capabilities = _detect_required_capabilities(
+        body,
+        state.config.smart_proxy.tools_capability_detection,
+    )
 
     try:
-        decision = state.router.route(messages, profile=profile)
+        decision = state.router.route(
+            messages,
+            profile=profile,
+            required_capabilities=required_capabilities,
+        )
+    except CapabilityNotSatisfiedError:
+        logger.warning(
+            "Capability not satisfied in debug endpoint profile=%s capabilities=%s state_version=%d",
+            profile,
+            required_capabilities,
+            state.version,
+        )
+        return _openai_error(
+            400,
+            f"No available model supports required capabilities: {', '.join(sorted(required_capabilities))}",
+            "capability_not_satisfied",
+        )
     except InputLimitNotSatisfiedError as exc:
         logger.warning(
             "Input limit not satisfied in debug endpoint profile=%s tier=%s prompt_tokens=%d state_version=%d",
@@ -1863,7 +2013,14 @@ async def route_debug(request: Request):
         )
         return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
-    return decision.model_dump()
+    payload = decision.model_dump()
+    payload["tools_capability_detection"] = {
+        "policy": tools_capability_decision.policy,
+        "declared": tools_capability_decision.declared,
+        "required": tools_capability_decision.required,
+        "trigger": tools_capability_decision.trigger,
+    }
+    return payload
 
 
 # ── Dashboard endpoints ────────────────────────────────────────────────────

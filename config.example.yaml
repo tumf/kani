@@ -27,8 +27,21 @@ default_profile: auto
 #     provider: "openrouter"  # optional; defaults to default_provider
 
 # ---------------------------------------------------------------------------
-# Smart-proxy context compaction (optional — all features disabled by default)
+# Smart-proxy options
 # ---------------------------------------------------------------------------
+# `tools_capability_detection` controls when request tool schemas require a
+# tools-capable model:
+#   - declared (default): any `tools` or legacy `functions` field requires tools
+#   - active (opt-in): decorative schemas are ignored unless tool use is forced
+#     or recent history after the latest user turn contains active tool state
+#     (`assistant.tool_calls`, legacy `function_call`, role=tool/function).
+# Use active for OpenCode-style clients that attach full schemas to ordinary
+# conversation turns; tool-required requests still fail closed.
+#
+# smart_proxy:
+#   tools_capability_detection: declared  # declared | active
+#
+# Context compaction is optional — all features disabled by default.
 # Uncomment and adjust to enable inline and/or background context compaction.
 #
 # smart_proxy:

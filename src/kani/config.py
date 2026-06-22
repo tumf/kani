@@ -283,6 +283,14 @@ class FallbackBackoffConfig(BaseModel):
 class SmartProxyConfig(BaseModel):
     """Smart-proxy feature configuration."""
 
+    tools_capability_detection: Literal["declared", "active"] = Field(
+        default="declared",
+        description=(
+            "Policy for requiring the tools capability from OpenAI tool/function "
+            "request fields. 'declared' preserves fail-closed legacy behavior; "
+            "'active' ignores decorative schemas unless tool use is explicit or active."
+        ),
+    )
     context_compaction: ContextCompactionConfig = Field(
         default_factory=ContextCompactionConfig
     )
