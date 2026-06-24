@@ -97,7 +97,6 @@ class FeatureClassifierStatus:
     default_only: bool = False
     classifier_model: str = ""
     embedding_model_mismatch: bool = False
-    embedding_model_mismatch: bool = False
 
 
 @dataclass(frozen=True)

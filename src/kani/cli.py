@@ -422,16 +422,6 @@ _STARTER_CONFIG = textwrap.dedent("""\
             fallback:
               - "openai/o3"
             provider: default
-
-    # ---------------------------------------------------------------------------
-    # Runtime embedding for learned routing classification
-    # ---------------------------------------------------------------------------
-    embedding:
-      mode: api  # api | local | disabled
-      model: "openai/text-embedding-3-small"
-      provider: openrouter
-      timeout_seconds: 5.0
-      # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required for mode=local
 """)
 
 

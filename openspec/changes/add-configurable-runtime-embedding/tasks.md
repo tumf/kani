@@ -19,3 +19,8 @@
 ## Final Validation
 
 Expected archive gate: `cflx openspec validate add-configurable-runtime-embedding --archive-gate`
+
+## Acceptance #1 Failure Follow-up
+- [x] Dirty working tree: config.example.yaml has unstaged changes (3 added comment lines for base_url/api_key override documentation)
+- [x] Duplicate embedding: YAML key in _STARTER_CONFIG at src/kani/cli.py:393-398 and 429-434 — kani init generates a config with a silently-overridden duplicate embedding section
+- [x] Duplicate field definition in src/kani/scorer.py:99-100 — embedding_model_mismatch: bool = False declared twice consecutively (copy-paste error)

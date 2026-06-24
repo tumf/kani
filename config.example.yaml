@@ -92,6 +92,9 @@ embedding:
     provider: openrouter
     model: "openai/text-embedding-3-small"
     timeout_seconds: 5.0
+    # Optional direct API endpoint/key override instead of provider resolution:
+    # base_url: "http://127.0.0.1:8317/v1"
+    # api_key: "${EMBEDDING_API_KEY}"
     # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required for mode: local
 
 # ---------------------------------------------------------------------------
