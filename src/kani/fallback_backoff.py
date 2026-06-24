@@ -67,22 +67,25 @@ class FallbackBackoffState:
         provider: str,
         *,
         now: datetime | None = None,
+        delay_seconds: float | None = None,
     ) -> BackoffStateEntry:
         """Increment failure streak and apply a new cooldown window."""
         current_now = now or datetime.now(UTC)
-        delay_seconds: float
+        applied_delay_seconds: float
         with self._lock:
             key = (model, provider)
             previous = self._entries.get(key)
             next_streak = 1 if previous is None else previous.failure_streak + 1
-            delay_seconds = min(
-                self._config.initial_delay_seconds
+            applied_delay_seconds = min(
+                delay_seconds
+                if delay_seconds is not None
+                else self._config.initial_delay_seconds
                 * (self._config.multiplier ** (next_streak - 1)),
                 self._config.max_delay_seconds,
             )
             entry = BackoffStateEntry(
                 failure_streak=next_streak,
-                cooldown_until=current_now + timedelta(seconds=delay_seconds),
+                cooldown_until=current_now + timedelta(seconds=applied_delay_seconds),
             )
             self._entries[key] = entry
 
@@ -91,7 +94,7 @@ class FallbackBackoffState:
             model,
             provider,
             entry.failure_streak,
-            delay_seconds,
+            applied_delay_seconds,
             entry.cooldown_until.isoformat() if entry.cooldown_until else "",
         )
         return entry

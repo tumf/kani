@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import httpx
@@ -132,6 +133,7 @@ class TestWithKeysConfigured:
         assert resp.status_code == 401
 
 
+@pytest.mark.usefixtures("_configured")
 class TestProxyFallbackBehavior:
     @pytest.mark.asyncio
     async def test_fallbacks_skip_primary_duplicate_and_dedupe(self):
@@ -340,7 +342,10 @@ class TestProxyFallbackBehavior:
         ]
 
     @pytest.mark.asyncio
-    async def test_retryable_failure_and_success_update_backoff_state(self):
+    @pytest.mark.parametrize("status_code", [400, 401, 402, 403, 404, 429, 502])
+    async def test_retryable_failure_and_success_update_backoff_state(
+        self, status_code
+    ):
         decision = RoutingDecision(
             model="model-primary",
             provider="primary-provider",
@@ -386,7 +391,7 @@ class TestProxyFallbackBehavior:
             )
             call_count += 1
             if call_count == 1:
-                return JSONResponse(status_code=502, content={"error": "retry"})
+                return JSONResponse(status_code=status_code, content={"error": "retry"})
             return JSONResponse(status_code=200, content={"ok": True})
 
         with patch("kani.proxy._proxy_upstream", side_effect=fake_proxy_upstream):
@@ -408,6 +413,45 @@ class TestProxyFallbackBehavior:
         assert (
             state.fallback_backoff_state.get_entry("model-fb-1", "fb-provider") is None
         )
+
+    @pytest.mark.asyncio
+    async def test_auth_and_billing_errors_use_max_backoff_delay(self):
+        decision = RoutingDecision(
+            model="model-primary",
+            provider="primary-provider",
+            base_url="https://primary.example/v1",
+            api_key="primary-key",
+            tier="SIMPLE",
+            score=0.1,
+            confidence=0.9,
+            profile="auto",
+            fallbacks=[],
+        )
+        state = _require_runtime_state()
+        state.fallback_backoff_state.record_success("model-primary", "primary-provider")
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            _ = args, kwargs
+            return JSONResponse(status_code=403, content={"error": "billing"})
+
+        with patch("kani.proxy._proxy_upstream", side_effect=fake_proxy_upstream):
+            result = await _try_with_fallbacks(
+                {
+                    "model": decision.model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+                decision,
+                "auto",
+                state=state,
+            )
+
+        assert result.status_code == 403
+        entry = state.fallback_backoff_state.get_entry(
+            "model-primary", "primary-provider"
+        )
+        assert entry is not None
+        assert entry.cooldown_until is not None
+        assert (entry.cooldown_until - datetime.now(UTC)).total_seconds() > 55
 
     def test_models_list_includes_all_primary_candidates(self, client):
         resp = client.get("/v1/models")
@@ -521,6 +565,37 @@ class TestSuccessfulFailureHandling:
         assert isinstance(result, JSONResponse)
         assert result.status_code == 529
         assert b"Overloaded" in result.body
+
+    @pytest.mark.asyncio
+    async def test_nonstream_spending_limit_payload_becomes_permission_error(self):
+        response = httpx.Response(
+            200,
+            json={
+                "error": {
+                    "message": '[xai/grok-4] [403]: {"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}',
+                    "code": "personal-team-blocked:spending-limit",
+                },
+            },
+        )
+
+        async with httpx.AsyncClient() as client:
+            with (
+                patch("kani.proxy._http", client),
+                patch.object(client, "post", return_value=response),
+            ):
+                result = await _proxy_upstream(
+                    "https://primary.example/v1",
+                    "primary-key",
+                    {
+                        "model": "xai/grok-4",
+                        "messages": [{"role": "user", "content": "hi"}],
+                    },
+                    None,
+                )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == 403
+        assert b"personal-team-blocked:spending-limit" in result.body
 
     @pytest.mark.asyncio
     async def test_streaming_normal_payload_stays_streaming(self):

@@ -13,7 +13,7 @@ class TestFallbackBackoffConfig:
         cfg = load_config(overrides={})
 
         backoff = cfg.smart_proxy.fallback_backoff
-        assert backoff.enabled is False
+        assert backoff.enabled is True
         assert backoff.initial_delay_seconds == 5.0
         assert backoff.multiplier == 2.0
         assert backoff.max_delay_seconds == 300.0
@@ -101,6 +101,51 @@ class TestFallbackBackoffState:
         )
 
         assert capped.cooldown_until == now + timedelta(seconds=21)
+
+    def test_failure_delay_can_be_overridden(self) -> None:
+        cfg = KaniConfig.model_validate(
+            {
+                "smart_proxy": {
+                    "fallback_backoff": {
+                        "enabled": True,
+                        "initial_delay_seconds": 5,
+                        "multiplier": 2,
+                        "max_delay_seconds": 300,
+                    }
+                }
+            }
+        )
+        state = FallbackBackoffState(cfg.smart_proxy.fallback_backoff)
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+
+        entry = state.record_retryable_failure(
+            "model-a", "provider-a", now=now, delay_seconds=120
+        )
+
+        assert entry.failure_streak == 1
+        assert entry.cooldown_until == now + timedelta(seconds=120)
+
+    def test_failure_delay_override_is_clamped_to_max(self) -> None:
+        cfg = KaniConfig.model_validate(
+            {
+                "smart_proxy": {
+                    "fallback_backoff": {
+                        "enabled": True,
+                        "initial_delay_seconds": 5,
+                        "multiplier": 2,
+                        "max_delay_seconds": 60,
+                    }
+                }
+            }
+        )
+        state = FallbackBackoffState(cfg.smart_proxy.fallback_backoff)
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+
+        entry = state.record_retryable_failure(
+            "model-a", "provider-a", now=now, delay_seconds=120
+        )
+
+        assert entry.cooldown_until == now + timedelta(seconds=60)
 
     def test_success_resets_streak(self) -> None:
         cfg = KaniConfig.model_validate(

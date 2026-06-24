@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 import kani.proxy as proxy_mod
-from kani.config import KaniConfig, ModelRuleEntry, ProviderConfig
+from kani.config import ContentPartPolicy, KaniConfig, ModelRuleEntry, ProviderConfig
 from kani.proxy import RuntimeState, app, configure
 from kani.router import Router, RoutingDecision
 from kani.scorer import ClassificationResult, Tier
@@ -34,6 +34,8 @@ def _config_text(
     compaction_enabled: bool = False,
     compaction_concurrency: int = 2,
     fallback_backoff_enabled: bool = False,
+    tools_capability_detection: str | None = None,
+    decorative_tool_schema_handling: str | None = None,
     input_limit_too_small: bool = False,
     primary_model: str = "auto-simple",
     fallback_models: str = "[]",
@@ -64,15 +66,22 @@ def _config_text(
       max_concurrency: {compaction_concurrency}
 """.format(compaction_concurrency=compaction_concurrency)
         )
-    if fallback_backoff_enabled:
-        smart_proxy_sections.append(
-            """
+    smart_proxy_sections.append(
+        f"""
   fallback_backoff:
-    enabled: true
+    enabled: {str(fallback_backoff_enabled).lower()}
     initial_delay_seconds: 5
     multiplier: 2
     max_delay_seconds: 60
 """
+    )
+    if tools_capability_detection is not None:
+        smart_proxy_sections.append(
+            f"  tools_capability_detection: {tools_capability_detection}\n"
+        )
+    if decorative_tool_schema_handling is not None:
+        smart_proxy_sections.append(
+            f"  decorative_tool_schema_handling: {decorative_tool_schema_handling}\n"
         )
 
     smart_proxy = ""
@@ -369,6 +378,116 @@ class TestReasoningContentCompatibility:
         assert "reasoning_content" not in sanitized["messages"][0]
         assert body["messages"][0]["reasoning_content"] == "private chain"
         assert deepcopy.call_count == 0
+
+    def test_model_rule_content_part_policy_normalizes_by_candidate_metadata(self):
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://dummy.example",
+                ),
+            },
+            model_rules=[
+                ModelRuleEntry(
+                    prefix="cx/gpt-5.5",
+                    provider="dummy",
+                    content_part_policy=ContentPartPolicy(
+                        mode="normalize",
+                        allowed_types=["text", "image_url"],
+                        text_types=["input_text", "output_text", "reasoning"],
+                        image_types=["input_image"],
+                        unknown="text",
+                    ),
+                )
+            ],
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+        body: dict[str, Any] = {
+            "model": "cx/gpt-5.5",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "answer"},
+                        {"type": "reasoning", "summary": [{"text": "thought"}]},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_image", "image_url": "file-123"},
+                    ],
+                },
+            ],
+        }
+
+        normalized = proxy_mod._normalize_message_content_for_candidate(
+            body, "cx/gpt-5.5", "dummy", state
+        )
+
+        assert normalized is not body
+        assert normalized["messages"][0]["content"] == [
+            {"type": "text", "text": "answer"},
+            {
+                "type": "text",
+                "text": '{"type":"reasoning","summary":[{"text":"thought"}]}',
+            },
+        ]
+        assert normalized["messages"][1]["content"] == [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "file-123", "detail": "auto"}},
+        ]
+        assert body["messages"][0]["content"][0]["type"] == "output_text"
+
+    def test_model_rule_content_part_policy_uses_provider_specific_precedence(self):
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://dummy.example",
+                ),
+                "other": ProviderConfig(
+                    name="other",
+                    base_url="http://other.example",
+                ),
+            },
+            model_rules=[
+                ModelRuleEntry(
+                    prefix="cx/gpt-5.5",
+                    content_part_policy=ContentPartPolicy(
+                        mode="normalize", unknown="text"
+                    ),
+                ),
+                ModelRuleEntry(
+                    prefix="*",
+                    provider="dummy",
+                    content_part_policy=ContentPartPolicy(mode="preserve"),
+                ),
+            ],
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+
+        assert proxy_mod._get_model_content_part_policy(
+            "cx/gpt-5.5", "dummy", state
+        ) == ContentPartPolicy(mode="preserve")
+        assert proxy_mod._get_model_content_part_policy(
+            "cx/gpt-5.5", "other", state
+        ) == ContentPartPolicy(mode="normalize", unknown="text")
 
     def test_config_text_accepts_optional_fragments_without_trailing_newline(
         self, tmp_path: Path
@@ -702,6 +821,340 @@ class TestProxyRoutingErrors:
         payload = resp.json()
         assert payload["error"]["type"] == "input_limit_not_satisfied"
         assert "No input-limit-eligible model candidate" in payload["error"]["message"]
+
+    def test_route_debug_exposes_tools_policy_without_schema_contents(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "config.yaml"
+        path.write_text(_config_text(tools_capability_detection="active"))
+        configure(str(path))
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/route",
+                json={
+                    "profile": "auto",
+                    "messages": [{"role": "user", "content": "hello world"}],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "function": {"name": "sensitive_internal_tool"},
+                        }
+                    ],
+                },
+            )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["tools_capability_detection"] == {
+            "policy": "active",
+            "declared": True,
+            "required": False,
+            "trigger": "declaration_ignored",
+        }
+        assert "sensitive_internal_tool" not in resp.text
+
+
+class TestDecorativeToolSchemaHandling:
+    def _tool_request(self, *, model: str = "kani/auto") -> dict[str, Any]:
+        return {
+            "model": model,
+            "messages": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {"name": "sensitive_internal_tool"},
+                }
+            ],
+            "functions": [{"name": "sensitive_legacy_function"}],
+            "tool_choice": "auto",
+            "function_call": "auto",
+        }
+
+    def test_routed_preserves_tool_fields_by_default(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text(_config_text(tools_capability_detection="active"))
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post("/v1/chat/completions", json=self._tool_request())
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        assert captured[0]["model"] == "auto-simple"
+        for field in ("tools", "functions", "tool_choice", "function_call"):
+            assert field in captured[0]
+
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_routed_strips_decorative_tool_fields_when_enabled(
+        self, tmp_path: Path, stream: bool
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+        request_body = self._tool_request()
+        request_body["stream"] = stream
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post("/v1/chat/completions", json=request_body)
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        assert captured[0]["model"] == "auto-simple"
+        assert captured[0]["stream"] is stream
+        for field in ("tools", "functions", "tool_choice", "function_call"):
+            assert field not in captured[0]
+        for field in ("tools", "functions", "tool_choice", "function_call"):
+            assert field in request_body
+
+    @pytest.mark.parametrize(
+        "forced_field",
+        [
+            {"tool_choice": "required"},
+            {"function_call": {"name": "sensitive_legacy_function"}},
+        ],
+    )
+    def test_routed_strip_preserves_forced_tool_use(
+        self, tmp_path: Path, forced_field: dict[str, object]
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+                model_rules="""
+model_rules:
+  - prefix: "auto-simple"
+    capabilities: [tools]
+""",
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+        request_body = self._tool_request()
+        request_body.update(forced_field)
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post("/v1/chat/completions", json=request_body)
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        for field, value in forced_field.items():
+            assert captured[0][field] == value
+        assert "tools" in captured[0]
+        assert "functions" in captured[0]
+        assert "tool_choice" in captured[0]
+        assert "function_call" in captured[0]
+
+    def test_routed_strip_preserves_active_tool_history(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+                model_rules="""
+model_rules:
+  - prefix: "auto-simple"
+    capabilities: [tools]
+""",
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+        request_body = self._tool_request()
+        request_body["messages"] = [
+            {"role": "user", "content": "use a tool"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "sensitive_internal_tool"},
+                    }
+                ],
+            },
+        ]
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post("/v1/chat/completions", json=request_body)
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        for field in ("tools", "functions", "tool_choice", "function_call"):
+            assert field in captured[0]
+
+    def test_passthrough_preserves_tool_fields_even_when_strip_configured(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post(
+                    "/v1/chat/completions",
+                    json=self._tool_request(model="direct-model"),
+                )
+
+        assert resp.status_code == 200
+        assert len(captured) == 1
+        assert captured[0]["model"] == "direct-model"
+        for field in ("tools", "functions", "tool_choice", "function_call"):
+            assert field in captured[0]
+
+    def test_fallback_attempts_reuse_adapted_payload(self, tmp_path: Path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+                fallback_models='["fallback-simple"]',
+            )
+        )
+        configure(str(path))
+        captured: list[dict[str, Any]] = []
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            captured.append(args[2])
+            if len(captured) == 1:
+                return JSONResponse(status_code=502, content={"error": "retry"})
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with TestClient(app, raise_server_exceptions=False) as client:
+                resp = client.post("/v1/chat/completions", json=self._tool_request())
+
+        assert resp.status_code == 200
+        assert [body["model"] for body in captured] == [
+            "auto-simple",
+            "fallback-simple",
+        ]
+        for body in captured:
+            for field in ("tools", "functions", "tool_choice", "function_call"):
+                assert field not in body
+
+    def test_route_debug_exposes_strip_audit_without_schema_contents(
+        self, tmp_path: Path
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+            )
+        )
+        configure(str(path))
+
+        with TestClient(app, raise_server_exceptions=False) as client:
+            resp = client.post(
+                "/v1/route",
+                json={"profile": "auto", **self._tool_request(model="ignored")},
+            )
+
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["decorative_tool_schema_handling"] == {
+            "policy": "strip",
+            "declared": True,
+            "required": False,
+            "applied": True,
+            "stripped_fields": [
+                "tools",
+                "functions",
+                "tool_choice",
+                "function_call",
+            ],
+        }
+        assert "sensitive_internal_tool" not in resp.text
+        assert "sensitive_legacy_function" not in resp.text
+
+    def test_chat_logs_strip_audit_without_schema_contents(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            _config_text(
+                tools_capability_detection="active",
+                decorative_tool_schema_handling="strip",
+            )
+        )
+        configure(str(path))
+
+        async def fake_proxy_upstream(*args, **kwargs):
+            return JSONResponse(content={"ok": True})
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(proxy_mod, "_proxy_upstream", fake_proxy_upstream)
+            mp.setattr("kani.scorer.Scorer.classify", _simple_classification)
+            with caplog.at_level("INFO", logger="kani.proxy"):
+                with TestClient(app, raise_server_exceptions=False) as client:
+                    resp = client.post(
+                        "/v1/chat/completions", json=self._tool_request()
+                    )
+
+        assert resp.status_code == 200
+        audit_logs = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == "kani.proxy"
+            and "DECORATIVE_TOOL_SCHEMA" in record.getMessage()
+        ]
+        assert audit_logs
+        assert "policy=strip" in audit_logs[0]
+        assert "applied=True" in audit_logs[0]
+        assert "sensitive_internal_tool" not in caplog.text
+        assert "sensitive_legacy_function" not in caplog.text
 
 
 class TestAdminReloadBehavior:

@@ -20,3 +20,4 @@ models/
 
 # review-gauntlet output
 .review-gauntlet/
+!.review-gauntlet/checkpoints/

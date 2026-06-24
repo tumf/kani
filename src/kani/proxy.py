@@ -44,7 +44,7 @@ from kani.compaction_store import (
     snapshot_hash,
     upsert_session,
 )
-from kani.config import KaniConfig, load_config
+from kani.config import ContentPartPolicy, KaniConfig, load_config
 from kani.dashboard import (
     dashboard_needs_stderr_backfill,
     get_dashboard_stats,
@@ -85,6 +85,27 @@ class RuntimeState:
     fallback_backoff_state: FallbackBackoffState
     config_loaded_at: str
     version: int
+
+
+@dataclass(frozen=True)
+class ToolsCapabilityDecision:
+    """Auditable result of policy-based tools capability detection."""
+
+    policy: str
+    declared: bool
+    required: bool
+    trigger: str
+
+
+@dataclass(frozen=True)
+class DecorativeToolSchemaAdaptation:
+    """Audit metadata for upstream decorative tool schema handling."""
+
+    policy: str
+    declared: bool
+    required: bool
+    applied: bool
+    stripped_fields: tuple[str, ...]
 
 
 _state: RuntimeState | None = None
@@ -291,7 +312,171 @@ def _openai_error(
     )
 
 
-def _detect_required_capabilities(body: dict[str, Any]) -> set[str]:
+def _has_tool_declarations(body: dict[str, Any]) -> bool:
+    """Return True when the request declares OpenAI tools/functions schemas."""
+    return "tools" in body or "functions" in body
+
+
+def _tool_choice_requires_tools(body: dict[str, Any]) -> bool:
+    """Return True when request fields explicitly force tool/function use."""
+    tool_choice = body.get("tool_choice")
+    tool_choice_forced = False
+    if isinstance(tool_choice, str):
+        tool_choice_forced = tool_choice not in {"auto", "none"}
+    elif isinstance(tool_choice, dict):
+        tool_choice_forced = True
+
+    function_call = body.get("function_call")
+    function_call_forced = False
+    if isinstance(function_call, str):
+        function_call_forced = function_call not in {"auto", "none"}
+    elif isinstance(function_call, dict):
+        function_call_forced = True
+
+    return tool_choice_forced or function_call_forced
+
+
+def _latest_user_message_index(messages: list[Any]) -> int:
+    """Return the latest user message index, or -1 when no user message exists."""
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            return idx
+    return -1
+
+
+def _message_has_tool_activity(message: dict[str, Any]) -> bool:
+    """Return True for assistant/tool messages that indicate active tool state."""
+    role = message.get("role")
+    if role in {"tool", "function"}:
+        return True
+    if role == "assistant":
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            return True
+        return "function_call" in message and message.get("function_call") is not None
+    return False
+
+
+def _has_active_tool_history(body: dict[str, Any]) -> bool:
+    """Return True when recent message history after the latest user has tool state."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return False
+
+    latest_user_idx = _latest_user_message_index(messages)
+    recent_messages = messages[latest_user_idx + 1 :]
+    return any(
+        isinstance(message, dict) and _message_has_tool_activity(message)
+        for message in recent_messages
+    )
+
+
+def _decide_tools_capability(
+    body: dict[str, Any], policy: str = "declared"
+) -> ToolsCapabilityDecision:
+    """Apply the configured tools capability policy to a request body."""
+    if policy not in {"declared", "active"}:
+        raise ValueError(f"Unsupported tools capability detection policy: {policy}")
+
+    declared = _has_tool_declarations(body)
+    if policy == "declared":
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=declared,
+            trigger="declaration" if declared else "none",
+        )
+
+    forced = _tool_choice_requires_tools(body)
+    if forced:
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=True,
+            trigger="forced_choice",
+        )
+
+    active_history = _has_active_tool_history(body)
+    if active_history:
+        return ToolsCapabilityDecision(
+            policy=policy,
+            declared=declared,
+            required=True,
+            trigger="active_history",
+        )
+
+    return ToolsCapabilityDecision(
+        policy=policy,
+        declared=declared,
+        required=False,
+        trigger="declaration_ignored" if declared else "none",
+    )
+
+
+_DECORATIVE_TOOL_SCHEMA_FIELDS = ("tools", "functions", "tool_choice", "function_call")
+
+
+def _adapt_decorative_tool_schema_payload(
+    body: dict[str, Any],
+    tools_decision: ToolsCapabilityDecision,
+    handling_policy: str = "preserve",
+) -> tuple[dict[str, Any], DecorativeToolSchemaAdaptation]:
+    """Return an upstream payload copy adapted for decorative tool schemas.
+
+    Only top-level schema/control fields are removed, and only when the existing
+    tools capability decision has already classified declarations as decorative.
+    """
+    if handling_policy not in {"preserve", "strip"}:
+        raise ValueError(
+            f"Unsupported decorative tool schema handling policy: {handling_policy}"
+        )
+
+    should_strip = (
+        handling_policy == "strip"
+        and tools_decision.declared
+        and not tools_decision.required
+    )
+    stripped_fields = tuple(
+        field for field in _DECORATIVE_TOOL_SCHEMA_FIELDS if field in body
+    )
+    if not should_strip:
+        return dict(body), DecorativeToolSchemaAdaptation(
+            policy=handling_policy,
+            declared=tools_decision.declared,
+            required=tools_decision.required,
+            applied=False,
+            stripped_fields=(),
+        )
+
+    adapted_body = {
+        key: value for key, value in body.items() if key not in stripped_fields
+    }
+    return adapted_body, DecorativeToolSchemaAdaptation(
+        policy=handling_policy,
+        declared=tools_decision.declared,
+        required=tools_decision.required,
+        applied=True,
+        stripped_fields=stripped_fields,
+    )
+
+
+def _decorative_tool_schema_adaptation_payload(
+    adaptation: DecorativeToolSchemaAdaptation,
+) -> dict[str, Any]:
+    """Return JSON-safe audit metadata without schema names or contents."""
+    return {
+        "policy": adaptation.policy,
+        "declared": adaptation.declared,
+        "required": adaptation.required,
+        "applied": adaptation.applied,
+        "stripped_fields": list(adaptation.stripped_fields),
+    }
+
+
+def _detect_required_capabilities(
+    body: dict[str, Any], tools_policy: str = "declared"
+) -> set[str]:
     """Detect required capabilities from request body.
 
     Returns:
@@ -311,8 +496,8 @@ def _detect_required_capabilities(body: dict[str, Any]) -> set[str]:
                             required.add("vision")
                             break
 
-    # Check for tools/functions capability
-    if "tools" in body or "functions" in body:
+    tools_decision = _decide_tools_capability(body, tools_policy)
+    if tools_decision.required:
         required.add("tools")
 
     # Check for json_mode capability
@@ -647,9 +832,9 @@ async def _proxy_upstream(
 
 
 def _is_retryable_error(result: StreamingResponse | JSONResponse) -> bool:
-    """Check if a response is a retryable error (429, 5xx, timeout, connection error)."""
+    """Check if a response is a retryable upstream error (4xx, 5xx, timeout, connection error)."""
     if isinstance(result, JSONResponse):
-        return result.status_code == 429 or result.status_code >= 500
+        return 400 <= result.status_code < 600
     return False
 
 
@@ -667,6 +852,24 @@ def _parse_successful_failure(payload: Any) -> tuple[int, str, str] | None:
 
     if error_type.lower() == "overloaded_error" or message.lower() == "overloaded":
         return 529, message or "Overloaded", "overloaded_error"
+
+    code = error.get("code") or ""
+    status = int(error.get("status") or error.get("status_code") or 0)
+    if not status:
+        code_lower = str(code).lower()
+        if "blocked" in code_lower or "spending" in code_lower or "limit" in code_lower:
+            status = 403
+        elif code_lower:
+            status = 500
+    if status:
+        return (
+            status,
+            message or str(code) or "Upstream error",
+            error_type or "upstream_error",
+        )
+
+    if message:
+        return 500, message, error_type or "upstream_error"
 
     return None
 
@@ -697,7 +900,14 @@ def _record_retryable_failure(
 ) -> None:
     """Record retryable failure for future cooldown filtering."""
     try:
-        state.fallback_backoff_state.record_retryable_failure(model, provider)
+        delay_seconds = None
+        if status_code in {401, 402, 403}:
+            delay_seconds = state.config.smart_proxy.fallback_backoff.max_delay_seconds
+        state.fallback_backoff_state.record_retryable_failure(
+            model,
+            provider,
+            delay_seconds=delay_seconds,
+        )
     except Exception:
         logger.exception(
             "Failed to apply fallback cooldown model=%s provider=%s status=%d",
@@ -759,7 +969,7 @@ async def _try_with_fallbacks(
     runtime = state or _require_runtime_state()
 
     # Try primary
-    primary_body = _sanitize_reasoning_content_for_candidate(
+    primary_body = _prepare_body_for_candidate(
         body, decision.model, decision.provider, runtime
     )
     result = await _proxy_upstream(
@@ -833,9 +1043,7 @@ async def _try_with_fallbacks(
                 fb_normalized_effort,
                 fb.provider,
             )
-        fb_body = _sanitize_reasoning_content_for_candidate(
-            fb_body, fb.model, fb.provider, runtime
-        )
+        fb_body = _prepare_body_for_candidate(fb_body, fb.model, fb.provider, runtime)
         result = await _proxy_upstream(
             fb.base_url.rstrip("/"),
             fb.api_key or "",
@@ -914,6 +1122,29 @@ def _get_reasoning_style_for_candidate(
     return _get_model_reasoning_style(
         model, provider_name, runtime
     ) or _get_provider_reasoning_style(provider_name, runtime)
+
+
+def _get_model_content_part_policy(
+    model: str, provider_name: str, runtime: RuntimeState
+) -> ContentPartPolicy | None:
+    best_policy: ContentPartPolicy | None = None
+    best_score: tuple[int, int] = (-1, -1)
+    for entry in runtime.config.model_rules:
+        prefix_matches = entry.prefix == "*" or model.startswith(entry.prefix)
+        if not prefix_matches:
+            continue
+        if entry.provider and entry.provider != provider_name:
+            continue
+        if entry.content_part_policy is None:
+            continue
+        score = (
+            1 if entry.provider else 0,
+            0 if entry.prefix == "*" else len(entry.prefix),
+        )
+        if score > best_score:
+            best_score = score
+            best_policy = entry.content_part_policy
+    return best_policy
 
 
 def _get_model_reasoning_content_support(
@@ -1000,6 +1231,118 @@ def _sanitize_reasoning_content_for_candidate(
         removed_count,
     )
     return sanitized_body
+
+
+def _text_from_content_part(part: dict[str, Any]) -> str:
+    for key in ("text", "content", "output"):
+        value = part.get(key)
+        if isinstance(value, str):
+            return value
+    return json.dumps(part, ensure_ascii=False, separators=(",", ":"))
+
+
+def _image_url_from_content_part(part: dict[str, Any]) -> dict[str, Any] | None:
+    image_url = part.get("image_url")
+    if isinstance(image_url, str):
+        return {"url": image_url, "detail": part.get("detail", "auto")}
+    if isinstance(image_url, dict):
+        return image_url
+    file_id = part.get("file_id")
+    if isinstance(file_id, str):
+        return {"url": file_id, "detail": part.get("detail", "auto")}
+    return None
+
+
+def _normalize_content_part(
+    part: dict[str, Any], policy: ContentPartPolicy
+) -> dict[str, Any] | None:
+    part_type = str(part.get("type") or "")
+    if part_type in policy.drop_types:
+        return None
+    if part_type in policy.text_types:
+        return {"type": "text", "text": _text_from_content_part(part)}
+    if part_type in policy.image_types:
+        image_url = _image_url_from_content_part(part)
+        if image_url is None:
+            return (
+                None
+                if policy.unknown == "drop"
+                else {"type": "text", "text": _text_from_content_part(part)}
+            )
+        return {"type": "image_url", "image_url": image_url}
+    if part_type in policy.allowed_types:
+        return part
+    if policy.unknown == "text":
+        return {"type": "text", "text": _text_from_content_part(part)}
+    if policy.unknown == "drop":
+        return None
+    return part
+
+
+def _normalize_message_content_for_candidate(
+    body: dict[str, Any], model: str, provider_name: str, runtime: RuntimeState
+) -> dict[str, Any]:
+    policy = _get_model_content_part_policy(model, provider_name, runtime)
+    if policy is None or policy.mode == "preserve":
+        return body
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+
+    changed_indexes: list[int] = []
+    normalized_messages = list(messages)
+    normalized_parts_count = 0
+    removed_parts_count = 0
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+            continue
+        next_content: list[Any] = []
+        changed = False
+        for part in msg["content"]:
+            if not isinstance(part, dict):
+                next_content.append(part)
+                continue
+            normalized_part = _normalize_content_part(part, policy)
+            if normalized_part is None:
+                changed = True
+                removed_parts_count += 1
+                continue
+            if normalized_part != part:
+                changed = True
+                normalized_parts_count += 1
+            next_content.append(normalized_part)
+        if changed:
+            next_msg = dict(msg)
+            next_msg["content"] = next_content or ""
+            normalized_messages[idx] = next_msg
+            changed_indexes.append(idx)
+
+    if not changed_indexes:
+        return body
+
+    normalized_body = dict(body)
+    normalized_body["messages"] = normalized_messages
+    logger.debug(
+        "MESSAGE_CONTENT normalized model=%s provider=%s changed_messages=%d normalized_parts=%d removed_parts=%d",
+        model,
+        provider_name,
+        len(changed_indexes),
+        normalized_parts_count,
+        removed_parts_count,
+    )
+    return normalized_body
+
+
+def _prepare_body_for_candidate(
+    body: dict[str, Any], model: str, provider_name: str, runtime: RuntimeState
+) -> dict[str, Any]:
+    prepared = _sanitize_reasoning_content_for_candidate(
+        body, model, provider_name, runtime
+    )
+    return _normalize_message_content_for_candidate(
+        prepared, model, provider_name, runtime
+    )
 
 
 def _has_explicit_reasoning_control(body: dict[str, Any]) -> bool:
@@ -1504,7 +1847,24 @@ async def chat_completions(request: Request):
         request_id = uuid.uuid4().hex[:12]
 
         # Detect required capabilities from request body
-        required_capabilities = _detect_required_capabilities(body)
+        tools_capability_decision = _decide_tools_capability(
+            body,
+            state.config.smart_proxy.tools_capability_detection,
+        )
+        required_capabilities = _detect_required_capabilities(
+            body,
+            state.config.smart_proxy.tools_capability_detection,
+        )
+        logger.info(
+            "TOOLS_CAPABILITY policy=%s declared=%s required=%s trigger=%s request_id=%s profile=%s state_version=%d",
+            tools_capability_decision.policy,
+            tools_capability_decision.declared,
+            tools_capability_decision.required,
+            tools_capability_decision.trigger,
+            request_id,
+            profile_name,
+            state.version,
+        )
 
         try:
             decision: RoutingDecision = state.router.route(
@@ -1569,6 +1929,23 @@ async def chat_completions(request: Request):
         if compaction_result.applied:
             body = dict(body)
             body["messages"] = compaction_result.messages
+
+        body, decorative_tool_schema_adaptation = _adapt_decorative_tool_schema_payload(
+            body,
+            tools_capability_decision,
+            state.config.smart_proxy.decorative_tool_schema_handling,
+        )
+        logger.info(
+            "DECORATIVE_TOOL_SCHEMA policy=%s declared=%s required=%s applied=%s stripped_fields=%s request_id=%s profile=%s state_version=%d",
+            decorative_tool_schema_adaptation.policy,
+            decorative_tool_schema_adaptation.declared,
+            decorative_tool_schema_adaptation.required,
+            decorative_tool_schema_adaptation.applied,
+            list(decorative_tool_schema_adaptation.stripped_fields),
+            request_id,
+            profile_name,
+            state.version,
+        )
 
         fallback_body_base = copy.deepcopy(body)
 
@@ -1834,9 +2211,33 @@ async def route_debug(request: Request):
     if not all(isinstance(message, dict) for message in messages):
         return _openai_error(400, "messages must contain only objects")
     profile = body.get("profile", None)
+    tools_capability_decision = _decide_tools_capability(
+        body,
+        state.config.smart_proxy.tools_capability_detection,
+    )
+    required_capabilities = _detect_required_capabilities(
+        body,
+        state.config.smart_proxy.tools_capability_detection,
+    )
 
     try:
-        decision = state.router.route(messages, profile=profile)
+        decision = state.router.route(
+            messages,
+            profile=profile,
+            required_capabilities=required_capabilities,
+        )
+    except CapabilityNotSatisfiedError:
+        logger.warning(
+            "Capability not satisfied in debug endpoint profile=%s capabilities=%s state_version=%d",
+            profile,
+            required_capabilities,
+            state.version,
+        )
+        return _openai_error(
+            400,
+            f"No available model supports required capabilities: {', '.join(sorted(required_capabilities))}",
+            "capability_not_satisfied",
+        )
     except InputLimitNotSatisfiedError as exc:
         logger.warning(
             "Input limit not satisfied in debug endpoint profile=%s tier=%s prompt_tokens=%d state_version=%d",
@@ -1854,7 +2255,23 @@ async def route_debug(request: Request):
         )
         return _openai_error(500, f"Routing failed: {exc}", "router_error")
 
-    return decision.model_dump()
+    _, decorative_tool_schema_adaptation = _adapt_decorative_tool_schema_payload(
+        body,
+        tools_capability_decision,
+        state.config.smart_proxy.decorative_tool_schema_handling,
+    )
+
+    payload = decision.model_dump()
+    payload["tools_capability_detection"] = {
+        "policy": tools_capability_decision.policy,
+        "declared": tools_capability_decision.declared,
+        "required": tools_capability_decision.required,
+        "trigger": tools_capability_decision.trigger,
+    }
+    payload["decorative_tool_schema_handling"] = (
+        _decorative_tool_schema_adaptation_payload(decorative_tool_schema_adaptation)
+    )
+    return payload
 
 
 # ── Dashboard endpoints ────────────────────────────────────────────────────

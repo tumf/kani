@@ -66,6 +66,17 @@ class ConfigIncompleteError(Exception):
 # ---------------------------------------------------------------------------
 
 
+class ContentPartPolicy(BaseModel):
+    """Candidate-specific message content part normalization policy."""
+
+    mode: Literal["preserve", "normalize"] = "preserve"
+    allowed_types: list[str] = Field(default_factory=list)
+    text_types: list[str] = Field(default_factory=list)
+    image_types: list[str] = Field(default_factory=list)
+    drop_types: list[str] = Field(default_factory=list)
+    unknown: Literal["preserve", "text", "drop"] = "preserve"
+
+
 class ProviderConfig(BaseModel):
     """A backend LLM provider (OpenRouter, Anthropic, local proxy, etc.)."""
 
@@ -265,7 +276,7 @@ class ContextCompactionConfig(BaseModel):
 class FallbackBackoffConfig(BaseModel):
     """Configuration for process-local fallback exponential backoff."""
 
-    enabled: bool = False
+    enabled: bool = True
     initial_delay_seconds: float = Field(default=5.0, ge=0.0)
     multiplier: float = Field(default=2.0, ge=1.0)
     max_delay_seconds: float = Field(default=300.0, ge=0.0)
@@ -283,6 +294,22 @@ class FallbackBackoffConfig(BaseModel):
 class SmartProxyConfig(BaseModel):
     """Smart-proxy feature configuration."""
 
+    tools_capability_detection: Literal["declared", "active"] = Field(
+        default="declared",
+        description=(
+            "Policy for requiring the tools capability from OpenAI tool/function "
+            "request fields. 'declared' preserves fail-closed legacy behavior; "
+            "'active' ignores decorative schemas unless tool use is explicit or active."
+        ),
+    )
+    decorative_tool_schema_handling: Literal["preserve", "strip"] = Field(
+        default="preserve",
+        description=(
+            "Policy for forwarding decorative top-level tool schemas upstream. "
+            "'preserve' keeps OpenAI-compatible payloads unchanged; 'strip' removes "
+            "top-level tool schema fields only when tool use is declared but not required."
+        ),
+    )
     context_compaction: ContextCompactionConfig = Field(
         default_factory=ContextCompactionConfig
     )
@@ -303,6 +330,7 @@ class ModelRuleEntry(BaseModel):
         Literal["openai", "xai", "anthropic", "dashscope", "gemini", "none"] | None
     ) = None
     supports_reasoning_content: bool | None = None
+    content_part_policy: ContentPartPolicy | None = None
 
 
 ModelCapabilityEntry = ModelRuleEntry

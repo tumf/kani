@@ -27,6 +27,7 @@
 - **Auth: API キーライフサイクル** — `test_api_keys.py` で生成/検証/一覧/名前削除/プレフィックス削除の全パスがカバー
 - **Auth: 認証ミドルウェア** — `test_api_keys_proxy.py` でキー未設定時の通過、health 免除、有効/無効キーがカバー
 - **Auth: CLI キー管理** — `test_api_keys_cli.py` で add/list/remove がカバー
+- **Proxy: 4xx/5xx 上流エラー時のフォールバック** — `test_api_keys_proxy.py::TestProxyFallbackBehavior::test_retryable_failure_and_success_update_backoff_state` で 400/401/402/403/404/429/502 がカバー
 - **Config: strict モードの例外** — `test_cli.py::TestConfigExceptions` で ConfigNotFoundError, ConfigIncompleteError が確認
 - **Config: init コマンド** — `test_cli.py::TestInitCommand` で作成/上書き拒否/force がカバー
 
@@ -34,8 +35,7 @@
 
 以下の動作はコードから読み取ったが、テストで直接カバーされていない:
 
-- **Proxy: フォールバックは 5xx のみ** — `proxy.py` の `_try_with_fallbacks` 実装から推測。4xx でリトライしない動作のテストは見当たらない
-- **Proxy: ストリーミングレスポンスのリトライ不可** — コード上は StreamingResponse が 5xx でもリトライされない。テストでは未カバー
+- **Proxy: ストリーミング開始後のリトライ不可** — コード上は開始済み StreamingResponse の途中失敗では同一レスポンス内フォールバックできない。テストでは未カバー
 - **Proxy: stream_options.include_usage 注入** — コードで確認。テストでは未カバー
 - **Proxy: URL 構築 (/v1 末尾の正規化)** — `proxy.py` のロジックから推測。テストでは未カバー
 - **Config: 環境変数未設定時の空文字列置換** — `resolve_env` の `os.environ.get(var, "")` から推測

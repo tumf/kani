@@ -8,7 +8,7 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
 
 ### Requirement: Chat Completions エンドポイント
 
-`POST /v1/chat/completions` は OpenAI Chat Completions API 互換のリクエストを受け付け、ルーティングまたはパススルーでバックエンドプロバイダに転送しなければならない (SHALL)。
+`POST /v1/chat/completions` は OpenAI Chat Completions API 互換のリクエストを受け付け、ルーティングまたはパススルーでバックエンドプロバイダに転送しなければならない (SHALL)。Routed requests MAY receive opt-in payload adaptation that removes decorative top-level tool schema fields only when configuration explicitly enables it and the tools capability decision determines tools are declared but not required.
 
 #### Scenario: ルーティングモード (model が kani/ で始まる)
 
@@ -32,6 +32,46 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
 - THEN ステータスコード 400 で OpenAI エラー形式のレスポンスを返す
 - AND エラーメッセージは "Invalid JSON body" である
 
+#### Scenario: decorative tool schema fields are preserved by default
+
+**Given** a routed chat completion request contains top-level `tools`, `functions`, `tool_choice`, or `function_call` fields
+**And** decorative tool schema handling is unset or set to `preserve`
+**When** kani forwards the request upstream
+**Then** kani MUST preserve those top-level fields in the upstream payload
+
+#### Scenario: decorative tool schema fields are stripped only when not required
+
+**Given** a routed chat completion request contains top-level `tools` or legacy `functions` declarations
+**And** tools capability detection determines `declared=True` and `required=False`
+**And** decorative tool schema handling is set to `strip`
+**When** kani forwards the request upstream
+**Then** kani MUST remove top-level `tools`, `functions`, `tool_choice`, and `function_call` fields from the upstream payload
+**And** kani MUST preserve all message content and non-tool request fields
+
+#### Scenario: required tool fields are never stripped
+
+**Given** a routed chat completion request contains tool declarations
+**And** tools capability detection determines `required=True` because tool use is forced or active
+**And** decorative tool schema handling is set to `strip`
+**When** kani forwards the request upstream
+**Then** kani MUST preserve tool-related request fields needed to satisfy the client intent
+**And** kani MUST continue requiring the `tools` capability during routing
+
+#### Scenario: passthrough mode never strips decorative tool fields
+
+**Given** a chat completion request contains top-level `tools`, `functions`, `tool_choice`, or `function_call` fields
+**And** the `model` field does not start with `kani/`
+**When** kani forwards the request in passthrough mode
+**Then** kani MUST preserve the request payload's tool-related fields regardless of decorative tool schema handling configuration
+
+#### Scenario: decorative stripping is auditable without schema leakage
+
+**Given** decorative tool schema handling is set to `strip`
+**And** a routed request contains decorative tool schema fields
+**When** kani adapts the upstream payload
+**Then** routing diagnostics or logs SHOULD indicate that decorative tool stripping was applied
+**And** diagnostics MUST NOT include tool schema contents by default
+
 ### Requirement: ストリーミングレスポンス
 
 ストリーミングモードのリクエストは SSE 形式で中継されなければならない (SHALL)。
@@ -44,15 +84,16 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
 - AND `stream_options.include_usage = true` をバックエンドリクエストに注入する
 - AND 最終チャンクの usage 情報をログに記録する
 
-#### Scenario: ストリーミングレスポンスのリトライ不可
+#### Scenario: 開始後のストリーミングレスポンスのリトライ不可
 
 - GIVEN リクエストが `stream=true` である
-- WHEN プライマリモデルのバックエンドが 5xx エラーを返す
-- THEN ストリーミングレスポンスはリトライされない
+- AND プライマリモデルのバックエンドが 200 ステータスで SSE を開始済みである
+- WHEN ストリーミング中に後続チャンクのエラーまたは切断が発生する
+- THEN システムは同一レスポンス内でフォールバックモデルへ切り替えない
 
 ### Requirement: フォールバック
 
-プライマリモデルが 5xx エラーを返した場合、フォールバックモデルに順次試行しなければならない (SHALL)。
+プライマリモデルまたはフォールバックモデルのバックエンドが HTTP 4xx または 5xx エラーを返した場合、残りのフォールバックモデルに順次試行しなければならない (SHALL)。
 
 #### Scenario: primary と fallback が重複する
 
@@ -68,19 +109,20 @@ OpenAI API 互換の HTTP プロキシ。クライアントからのリクエス
 - THEN システムは設定順を維持しつつ重複候補を一意化する
 - AND 各候補は最大 1 回だけ試行される
 
-#### Scenario: プライマリモデルの 5xx エラー (非ストリーミング)
+#### Scenario: プライマリモデルの HTTP エラー (非ストリーミング)
 
 - GIVEN ルーティング決定にフォールバックモデルが定義されている
 - AND リクエストが非ストリーミングである
-- WHEN プライマリモデルのバックエンドが 5xx ステータスを返す
+- WHEN プライマリモデルのバックエンドが 4xx または 5xx ステータスを返す
 - THEN 次のフォールバックモデルのバックエンドに同じリクエストを送る
 - AND すべてのフォールバックが失敗するまで順次試行する
 
-#### Scenario: 4xx エラーはリトライしない
+#### Scenario: 上流 4xx エラーのフォールバック
 
 - GIVEN バックエンドが 4xx ステータスを返す
 - WHEN フォールバックモデルが存在する
-- THEN リトライせずにクライアントにそのエラーレスポンスを返す
+- THEN システムはその 4xx を上流候補の失敗として扱う
+- AND 次のフォールバックモデルのバックエンドに同じリクエストを送る
 
 ### Requirement: エラーレスポンス形式
 

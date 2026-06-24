@@ -160,8 +160,31 @@ kani automatically detects required capabilities from the request and routes to 
 | Capability | Trigger |
 |------------|---------|
 | `vision` | `image_url` content block in messages |
-| `tools` | `tools` or `functions` field in request |
+| `tools` | `tools` or `functions` field in request by default; configurable below |
 | `json_mode` | `response_format.type` is `json_object` or `json_schema` |
+
+**Tools detection policy:** `smart_proxy.tools_capability_detection` controls when tool declarations require a tools-capable model.
+
+- `declared` (default, fail-closed): any top-level `tools` or legacy `functions` field requires the `tools` capability. This preserves backward-compatible safety for clients whose declarations mean tool use is possible on that turn.
+- `active` (opt-in): decorative schemas alone do not require `tools`. Kani still requires `tools` when the request explicitly forces tool use (`tool_choice: "required"`, a specific `tool_choice`, or legacy `function_call`) or when recent history after the latest user turn contains active tool state (`assistant.tool_calls`, legacy `assistant.function_call`, `role: "tool"`, or legacy `role: "function"`). This is intended for OpenCode-style clients that attach the full tool schema to ordinary conversation turns.
+
+```yaml
+smart_proxy:
+  # declared is safest and remains the default.
+  # Use active only when your client sends decorative tool schemas on every turn.
+  tools_capability_detection: declared  # declared | active
+
+  # preserve is default OpenAI-compatible forwarding behavior.
+  # strip is opt-in and only applies when active detection marks schemas decorative.
+  decorative_tool_schema_handling: preserve  # preserve | strip
+```
+
+`smart_proxy.decorative_tool_schema_handling` controls the upstream payload after routing has already decided whether tools are required:
+
+- `preserve` (default): forward `tools`, legacy `functions`, `tool_choice`, and legacy `function_call` unchanged. This keeps existing OpenAI-compatible client behavior unchanged.
+- `strip` (opt-in): when `tools_capability_detection: active` classifies tool/function schemas as declared but not required, remove only the top-level `tools`, `functions`, `tool_choice`, and `function_call` fields from the upstream request copy. Kani never strips message history or schema contents used for routing diagnostics.
+
+Stripping is a compatibility escape hatch for providers/models that reject decorative tool schema fields. It is never applied when tool use is forced (`tool_choice` or legacy `function_call`) or active after the latest user turn (`assistant.tool_calls`, legacy `assistant.function_call`, `role: "tool"`, or legacy `role: "function"`). Requests that are evaluated as requiring `tools` still fail closed when no configured candidate declares the capability.
 
 **Configuration:** declare model metadata via prefix matching in `config.yaml` using `model_rules`:
 
@@ -233,6 +256,14 @@ profiles:
       # provider: per-tier override (optional)
 
 smart_proxy:
+  # Tools capability routing policy:
+  # - declared (default): tools/functions declarations require a tools-capable model
+  # - active: decorative schemas are ignored unless tool use is forced or active in recent history
+  tools_capability_detection: declared
+  # Upstream decorative tool schema payload policy:
+  # - preserve (default): forward tool-related top-level fields unchanged
+  # - strip: remove them only when active detection says they are declared but not required
+  decorative_tool_schema_handling: preserve
   fallback_backoff:
     enabled: true
     initial_delay_seconds: 5

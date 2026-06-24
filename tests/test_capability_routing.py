@@ -63,6 +63,173 @@ class TestCapabilityDetection:
         caps = _detect_required_capabilities(body)
         assert "tools" in caps
 
+    def test_active_policy_ignores_decorative_tools_field(self) -> None:
+        """Active policy should not require tools for schema-only requests."""
+        from kani.proxy import _decide_tools_capability, _detect_required_capabilities
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Simple text question"}],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+        }
+
+        decision = _decide_tools_capability(body, "active")
+        caps = _detect_required_capabilities(body, "active")
+
+        assert decision.policy == "active"
+        assert decision.declared is True
+        assert decision.required is False
+        assert decision.trigger == "declaration_ignored"
+        assert "tools" not in caps
+
+    @pytest.mark.parametrize(
+        "forced_field",
+        [
+            {"tool_choice": "required"},
+            {"tool_choice": {"type": "function", "function": {"name": "test"}}},
+            {"function_call": "test"},
+            {"function_call": {"name": "test"}},
+        ],
+    )
+    def test_active_policy_detects_forced_tool_choice(
+        self, forced_field: dict[str, object]
+    ) -> None:
+        """Active policy should require tools for explicit tool/function forcing."""
+        from kani.proxy import _decide_tools_capability, _detect_required_capabilities
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Use the tool"}],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+            **forced_field,
+        }
+
+        decision = _decide_tools_capability(body, "active")
+        caps = _detect_required_capabilities(body, "active")
+
+        assert decision.required is True
+        assert decision.trigger == "forced_choice"
+        assert "tools" in caps
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function"}]},
+            {"role": "assistant", "function_call": {"name": "legacy"}},
+            {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+            {"role": "function", "name": "legacy", "content": "result"},
+        ],
+    )
+    def test_active_policy_detects_active_tool_history(
+        self, message: dict[str, object]
+    ) -> None:
+        """Active policy should require tools for tool state after latest user."""
+        from kani.proxy import _decide_tools_capability, _detect_required_capabilities
+
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Please use the tool"},
+                message,
+            ],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+        }
+
+        decision = _decide_tools_capability(body, "active")
+        caps = _detect_required_capabilities(body, "active")
+
+        assert decision.required is True
+        assert decision.trigger == "active_history"
+        assert "tools" in caps
+
+    def test_active_policy_ignores_tool_history_before_latest_user(self) -> None:
+        """Resolved tool activity before the latest user turn should not be active."""
+        from kani.proxy import _decide_tools_capability, _detect_required_capabilities
+
+        body = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "user", "content": "Use the tool"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [{"id": "call_1", "type": "function"}],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": "result"},
+                {"role": "user", "content": "Thanks. Now answer normally."},
+            ],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+        }
+
+        decision = _decide_tools_capability(body, "active")
+        caps = _detect_required_capabilities(body, "active")
+
+        assert decision.required is False
+        assert decision.trigger == "declaration_ignored"
+        assert "tools" not in caps
+
+    def test_decorative_tool_schema_adaptation_strips_copy_only(self) -> None:
+        """Strip mode should remove only top-level decorative tool fields."""
+        from kani.proxy import (
+            _adapt_decorative_tool_schema_payload,
+            _decide_tools_capability,
+        )
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Simple question"}],
+            "tools": [{"type": "function", "function": {"name": "sensitive"}}],
+            "functions": [{"name": "legacy_sensitive"}],
+            "tool_choice": "auto",
+            "function_call": "auto",
+            "temperature": 0.2,
+        }
+        decision = _decide_tools_capability(body, "active")
+
+        adapted, audit = _adapt_decorative_tool_schema_payload(body, decision, "strip")
+
+        assert adapted is not body
+        assert body["tools"][0]["function"]["name"] == "sensitive"
+        assert adapted == {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Simple question"}],
+            "temperature": 0.2,
+        }
+        assert audit.applied is True
+        assert audit.stripped_fields == (
+            "tools",
+            "functions",
+            "tool_choice",
+            "function_call",
+        )
+
+    @pytest.mark.parametrize(
+        "policy",
+        ["preserve", "strip"],
+    )
+    def test_decorative_tool_schema_adaptation_preserves_when_required(
+        self, policy: str
+    ) -> None:
+        """Forced tool use should preserve fields even when strip is configured."""
+        from kani.proxy import (
+            _adapt_decorative_tool_schema_payload,
+            _decide_tools_capability,
+        )
+
+        body = {
+            "model": "gpt-4",
+            "messages": [{"role": "user", "content": "Use the tool"}],
+            "tools": [{"type": "function", "function": {"name": "test"}}],
+            "tool_choice": "required",
+        }
+        decision = _decide_tools_capability(body, "active")
+
+        adapted, audit = _adapt_decorative_tool_schema_payload(body, decision, policy)
+
+        assert adapted is not body
+        assert adapted == body
+        assert audit.applied is False
+        assert audit.stripped_fields == ()
+
     def test_detect_json_mode_capability(self) -> None:
         """JSON mode capability should be detected when response_format is json."""
         from kani.proxy import _detect_required_capabilities
@@ -275,6 +442,26 @@ class TestCapabilityFiltering:
 
         caps = router._get_model_capabilities("unknown-model-xyz")
         assert len(caps) == 0
+
+    def test_tool_required_requests_fail_closed_when_candidates_lack_tools(
+        self,
+    ) -> None:
+        """Tool-required requests should fail when no candidate declares tools."""
+        config = self._make_config(
+            model_capabilities=[
+                ModelCapabilityEntry(prefix="text-model", capabilities=[]),
+            ]
+        )
+        router = Router(config)
+
+        with pytest.raises(CapabilityNotSatisfiedError) as exc_info:
+            router.route(
+                [{"role": "user", "content": "Use the tool"}],
+                profile="auto",
+                required_capabilities={"tools"},
+            )
+
+        assert exc_info.value.required_capabilities == {"tools"}
 
 
 class TestCapabilityEscalation:
