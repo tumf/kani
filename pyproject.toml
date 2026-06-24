@@ -1,7 +1,7 @@
 [project]
 name = "kani-router"
 version = "0.1.0"
-description = "Add your description here"
+description = "A local OpenAI-compatible proxy that routes LLM requests by complexity, capability, and cost/quality profile"
 readme = "README.md"
 authors = [
     { name = "tumf", email = "tumf@users.noreply.github.com" }

@@ -7,83 +7,85 @@
 [![CI](https://github.com/tumf/kani/actions/workflows/ci.yml/badge.svg)](https://github.com/tumf/kani/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-LLM smart router. Classifies prompts by complexity and routes to the optimal model.
+kani is an OpenAI-compatible local proxy that automatically routes LLM requests to the most suitable model.
+It classifies each request by prompt complexity, required capabilities, and your cost/quality profile.
 
-OpenAI API-compatible proxy — drop in as a base URL and let kani pick the right model automatically.
+Use kani when you want to:
 
-## How it works
-
-```
-Request → Distilled Feature Classifier (15 dimensions) → Tier + Agentic Score → Capability Filter → Model Selection (round-robin) → Upstream Provider
-                                                     │
-                                                     └─ model unavailable → conservative default
-```
-
-**Classification pipeline:**
-
-1. **Distilled feature classifier** — deterministic `tokenCount` + learned 14 semantic dimensions
-2. **Axis-based scoring** — separate `complexity` and `reasoning` scores drive tier selection
-3. **Independent agentic score** — `agenticTask` dimension is exposed as `agentic_score` without affecting tier
-4. **Conservative default** — fall back to `MEDIUM` when the feature model is unavailable
-5. **Capability filter** — auto-detects vision/tools/json_mode from the request and escalates to a capable model
-
-Every request is logged to `$XDG_STATE_HOME/kani/log/` (default: `~/.local/state/kani/log/`) as training data for future model improvement.
-
-## Scoring approach
-
-kani no longer relies on hand-maintained keyword lists or runtime LLM fallback for routing.
-The scorer is now distilled-feature-first:
-
-- compute `tokenCount` deterministically
-- infer 14 semantic dimensions (`low` / `medium` / `high`) using a learned multi-output classifier
-- compute separate **complexity** and **reasoning** axis scores from the dimensions
-- determine tier from these axis scores (`SIMPLE` / `MEDIUM` / `COMPLEX` / `REASONING`)
-- expose `agentic_score` from the `agenticTask` dimension independently (does not affect tier)
-- return a conservative default tier when the feature model, embedding configuration, embedding request, or prediction path is unavailable
-
-**Axis-based tier thresholds:**
-
-- **REASONING**: `reasoning_score >= 0.75` (4 reasoning dimensions averaged)
-- **COMPLEX**: `complexity_score >= 0.8` (6 complexity dimensions averaged)
-- **MEDIUM**: `complexity_score >= 0.5`
-- **SIMPLE**: below all thresholds
-
-This makes routing behavior easier to improve with data, because changes come from retraining and calibration rather than runtime prompt engineering.
+- use one OpenAI-compatible endpoint across OpenAI, OpenRouter, local proxies, and other providers
+- reduce cost by routing simple prompts to cheaper models
+- keep stronger models for complex, agentic, or reasoning-heavy work
+- inspect routing decisions through headers, logs, and debug endpoints
 
 ## Quick start
 
-### Try without installing (uvx)
+### Requirements
+
+- Python 3.13+
+- uv
+- At least one OpenAI-compatible provider API key, for example `OPENROUTER_API_KEY`
+
+### Try the router only
+
+This classifies a prompt without running the proxy server.
 
 ```bash
-# Classify a prompt
 uvx --from git+https://github.com/tumf/kani kani route "hello world"
-
-# Start the proxy server
-uvx --from git+https://github.com/tumf/kani kani serve
 ```
 
-### Local install
+### Run as a proxy server
 
 ```bash
-git clone https://github.com/tumf/kani.git && cd kani
+git clone https://github.com/tumf/kani.git
+cd kani
 uv sync
+cp config.example.yaml config.yaml
+cp .env.example .env
+```
 
-uv run kani route "hello world"
+Edit `.env`:
+
+```bash
+OPENROUTER_API_KEY=your-openrouter-api-key
+```
+
+Start kani:
+
+```bash
 uv run kani serve
+```
+
+By default, kani listens on `http://localhost:18420/v1`.
+
+Send an OpenAI-compatible request:
+
+```bash
+curl http://localhost:18420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kani/auto",
+    "messages": [
+      {"role": "user", "content": "explain quicksort"}
+    ]
+  }'
+```
+
+Debug routing without proxying upstream:
+
+```bash
+uv run kani route "explain quicksort"
 ```
 
 ## Usage — drop-in replacement for OpenAI / OpenRouter
 
-kani speaks the OpenAI API. Change `base_url` and `model`, everything else stays the same.
+kani speaks the OpenAI API. Change `base_url` and `model`; keep the rest of your client code the same.
 
-### Before (direct OpenAI)
+### Before: direct OpenAI
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    api_key="sk-...",                          # OpenAI key
-)
+client = OpenAI(api_key="sk-...")
 
 response = client.chat.completions.create(
     model="gpt-4o",
@@ -91,14 +93,14 @@ response = client.chat.completions.create(
 )
 ```
 
-### Before (OpenRouter)
+### Before: OpenRouter
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",  # OpenRouter
-    api_key="sk-or-...",                       # OpenRouter key
+    base_url="https://openrouter.ai/api/v1",
+    api_key="sk-or-...",
 )
 
 response = client.chat.completions.create(
@@ -107,118 +109,76 @@ response = client.chat.completions.create(
 )
 ```
 
-### After (kani) — auto-routed
+### After: kani auto-routes
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    base_url="http://localhost:18420/v1",      # ← kani
-    api_key="anything",                        # kani handles upstream auth
+    base_url="http://localhost:18420/v1",
+    api_key="kani-local-dev",  # ignored unless kani API key auth is enabled
 )
 
-# kani picks the best model based on prompt complexity
 response = client.chat.completions.create(
     model="kani/auto",
     messages=[{"role": "user", "content": "explain quicksort"}],
 )
 
-# Or pin a routing profile
 response = client.chat.completions.create(
-    model="kani/premium",  # always use best-quality models
+    model="kani/premium",
     messages=[{"role": "user", "content": "prove P != NP"}],
 )
 ```
 
-### curl
+Any tool or library that supports the OpenAI API works with kani: LangChain, LlamaIndex, Cursor, Continue, and similar clients.
+
+## API keys
+
+kani uses two different kinds of keys:
+
+1. **Upstream provider keys**
+   - Used by kani to call OpenAI, OpenRouter, local proxies, and other providers.
+   - Configured in `config.yaml` or environment variables such as `OPENROUTER_API_KEY`.
+2. **kani proxy API keys**
+   - Used by clients to authenticate to kani itself.
+   - Optional. If no kani keys are configured, requests are accepted without authentication.
+
+Enable kani proxy authentication:
 
 ```bash
-curl http://localhost:18420/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "kani/auto", "messages": [{"role": "user", "content": "hello"}]}'
+uv run kani keys add my-client
 ```
 
-> **That's it.** Any tool or library that supports the OpenAI API works with kani — LangChain, LlamaIndex, Cursor, Continue, etc. Just point `base_url` at kani.
+Use the generated key as the OpenAI client API key:
+
+```python
+client = OpenAI(
+    base_url="http://localhost:18420/v1",
+    api_key="kani-aBcDeFgH...",
+)
+```
+
+When at least one kani proxy key exists, every API request must include `Authorization: Bearer <key>`. `/health` and `/docs` are exempt.
 
 ## Routing profiles
 
-> Note: The routing profiles below are sample/reference defaults. Treat them as examples — you should tune the actual profile names, strategies, and model mappings to match your own workload and cost/quality goals.
+Profiles are examples. Tune names, strategies, and model mappings for your workload and cost/quality goals.
 
 | Profile | Strategy | Best for |
 |---------|----------|----------|
-| `kani/auto` | Balanced cost/quality (default) | General use |
+| `kani/auto` | Balanced cost/quality | General use |
 | `kani/eco` | Cheapest viable models | High volume, low stakes |
 | `kani/premium` | Best quality models | Critical tasks |
 | `kani/agentic` | Tool-use optimized | Agent workflows |
 
-## Capability-aware routing
-
-kani automatically detects required capabilities from the request and routes to a model that supports them. If no model in the scored tier has the required capabilities, kani escalates to higher tiers.
-
-**Detected capabilities:**
-
-| Capability | Trigger |
-|------------|---------|
-| `vision` | `image_url` content block in messages |
-| `tools` | `tools` or `functions` field in request by default; configurable below |
-| `json_mode` | `response_format.type` is `json_object` or `json_schema` |
-
-**Tools detection policy:** `smart_proxy.tools_capability_detection` controls when tool declarations require a tools-capable model.
-
-- `declared` (default, fail-closed): any top-level `tools` or legacy `functions` field requires the `tools` capability. This preserves backward-compatible safety for clients whose declarations mean tool use is possible on that turn.
-- `active` (opt-in): decorative schemas alone do not require `tools`. Kani still requires `tools` when the request explicitly forces tool use (`tool_choice: "required"`, a specific `tool_choice`, or legacy `function_call`) or when recent history after the latest user turn contains active tool state (`assistant.tool_calls`, legacy `assistant.function_call`, `role: "tool"`, or legacy `role: "function"`). This is intended for OpenCode-style clients that attach the full tool schema to ordinary conversation turns.
-
-```yaml
-smart_proxy:
-  # declared is safest and remains the default.
-  # Use active only when your client sends decorative tool schemas on every turn.
-  tools_capability_detection: declared  # declared | active
-
-  # preserve is default OpenAI-compatible forwarding behavior.
-  # strip is opt-in and only applies when active detection marks schemas decorative.
-  decorative_tool_schema_handling: preserve  # preserve | strip
-```
-
-`smart_proxy.decorative_tool_schema_handling` controls the upstream payload after routing has already decided whether tools are required:
-
-- `preserve` (default): forward `tools`, legacy `functions`, `tool_choice`, and legacy `function_call` unchanged. This keeps existing OpenAI-compatible client behavior unchanged.
-- `strip` (opt-in): when `tools_capability_detection: active` classifies tool/function schemas as declared but not required, remove only the top-level `tools`, `functions`, `tool_choice`, and `function_call` fields from the upstream request copy. Kani never strips message history or schema contents used for routing diagnostics.
-
-Stripping is a compatibility escape hatch for providers/models that reject decorative tool schema fields. It is never applied when tool use is forced (`tool_choice` or legacy `function_call`) or active after the latest user turn (`assistant.tool_calls`, legacy `assistant.function_call`, `role: "tool"`, or legacy `role: "function"`). Requests that are evaluated as requiring `tools` still fail closed when no configured candidate declares the capability.
-
-**Configuration:** declare model metadata via prefix matching in `config.yaml` using `model_rules`:
-
-```yaml
-model_rules:
-  - prefix: "anthropic/claude-"
-    capabilities: [vision, tools, json_mode]
-  - prefix: "google/gemini-"
-    capabilities: [vision, tools, json_mode]
-  - prefix: "openai/gpt-4"
-    capabilities: [vision, tools, json_mode]
-```
-
-`model_rules` is the primary model metadata surface. The older `model_capabilities` key remains a legacy alias and is normalized into `model_rules` only when `model_rules` is unset. When a request requires capabilities and no configured candidate declares the full required set, routing fails closed instead of selecting an incapable model.
-
-## API endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/chat/completions` | POST | Main proxy (OpenAI-compatible) |
-| `/v1/models` | GET | List available models |
-| `/v1/route` | POST | Debug — returns routing decision without proxying |
-| `/admin/reload-config` | POST | Admin-only safe config hot reload |
-| `/health` | GET | Health + active config version metadata |
-
-Routed responses include extra headers: `X-Kani-Tier`, `X-Kani-Model`, `X-Kani-Score`, `X-Kani-Signals`.
-
-## Configuration
+## Minimal configuration
 
 `config.yaml`:
 
 ```yaml
 host: "0.0.0.0"
 port: 18420
+
 default_provider: openrouter
 default_profile: auto
 
@@ -227,133 +187,174 @@ providers:
     name: openrouter
     base_url: "https://openrouter.ai/api/v1"
     api_key: "${OPENROUTER_API_KEY}"
-    # reasoning_style: openai | anthropic | dashscope | gemini | none (default: openai)
-  cliproxy:
-    name: cliproxy
-    base_url: "http://127.0.0.1:8317/v1"
-    api_key: "local-test-key"
 
 profiles:
   auto:
     tiers:
       SIMPLE:
-        # primary can be a single model or an ordered list for round-robin
-        primary: ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
-        fallback: ["nvidia/gpt-oss-120b"]
+        primary: "gpt-4o-mini"
       MEDIUM:
-        primary:
-          model: "moonshotai/kimi-k2.5"
-          max_input_tokens: 128000
-        fallback: null  # allowed; normalized to []
+        primary: "gpt-4o-mini"
       COMPLEX:
-        primary: "google/gemini-3.1-pro"
-        fallback:
-          - model: "anthropic/claude-sonnet-4.6"
-            max_input_tokens: 200000
+        primary: "gpt-4o"
       REASONING:
-        primary: "x-ai/grok-4-1-fast-reasoning"
-        fallback: ["anthropic/claude-sonnet-4.6"]
-      # provider: per-tier override (optional)
-
-embedding:
-  # api: use provider/base_url below; local: no external API call; disabled: default-only routing
-  mode: api  # api | local | disabled
-  model: "openai/text-embedding-3-small"
-  provider: openrouter
-  # base_url: "http://127.0.0.1:8317/v1"  # optional direct API endpoint
-  # api_key: "${EMBEDDING_API_KEY}"       # optional direct API key
-  timeout_seconds: 5.0
-  # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required when mode=local
-
-smart_proxy:
-  # Tools capability routing policy:
-  # - declared (default): tools/functions declarations require a tools-capable model
-  # - active: decorative schemas are ignored unless tool use is forced or active in recent history
-  tools_capability_detection: declared
-  # Upstream decorative tool schema payload policy:
-  # - preserve (default): forward tool-related top-level fields unchanged
-  # - strip: remove them only when active detection says they are declared but not required
-  decorative_tool_schema_handling: preserve
-  fallback_backoff:
-    enabled: true
-    initial_delay_seconds: 5
-    multiplier: 2
-    max_delay_seconds: 300
-
+        primary: "gpt-4o"
 ```
 
-- `${VAR}` syntax resolves environment variables
-- `embedding.mode: api` uses the configured embedding `provider`/`model`/`timeout_seconds`; secrets still come from provider `api_key` env placeholders or explicit embedding `api_key`
-- `embedding.mode: local` uses `embedding.local_model` and does not call an external embeddings API at route time; install local embedding dependencies separately
-- `embedding.mode: disabled` skips the learned semantic classifier and returns the conservative default classification (`MEDIUM`, confidence `0.35`) before routing
-- Training records the effective embedding model identity and dimension in `models/feature_classifier.pkl`; keep runtime embedding model/local_model compatible with the trained bundle
-- Provider resolution order is: model-entry `provider` > tier-level `provider` > `default_provider`
-- Configured model IDs are sent literally to the selected provider; `anthropic/claude-sonnet-4.6` is not parsed by kani as a provider selector unless you also set a `provider` field
-- `primary` accepts a string, `{model, provider, max_input_tokens}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
-- `fallback` accepts the same string/object entries as `primary`; object entries can set `max_input_tokens` so candidates with a known input limit lower than the estimated prompt tokens are skipped
-- Candidates without `max_input_tokens` remain eligible because their input limit is unknown
-- `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
-- `embedding.mode: api` uses `embedding.provider` or direct `embedding.base_url` / `embedding.api_key`, sends `embedding.model`, and applies `timeout_seconds`
-- `embedding.mode: local` uses `embedding.local_model` through a lazily imported local backend; install local embedding dependencies separately and keep its output dimension compatible with the trained classifier bundle
-- `embedding.mode: disabled` skips learned semantic classification and returns conservative default routing (`MEDIUM`, confidence `0.35`) without heuristic semantic fallback
-- Legacy `embedding.enabled: false` is treated as `embedding.mode: disabled`
-- `kani doctor` reports embedding mode/model/timeout and never prints API keys
-- When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
-- `smart_proxy.fallback_backoff` enables process-local exponential cooldowns for retryable non-streaming `429` / `5xx` failures, keyed by `model+provider`
-- Cooled-down `model+provider` pairs are skipped during both primary selection and fallback execution; the same model on a different provider remains eligible
-- Successful recovery resets the failure streak for that exact `model+provider` pair, and restarting kani clears the in-memory cooldown registry
-- Config path: `--config` flag > `$KANI_CONFIG` env var > `./config.yaml` > `$XDG_CONFIG_HOME/kani/config.yaml` > `/etc/kani/config.yaml`
-- Set `KANI_ADMIN_TOKEN` to enable `POST /admin/reload-config` (admin-only, separate from regular API keys)
-- Hot reload validates with `strict=True` and rejects non-reloadable field changes (`host`, `port`) with `409`
+For a full example with embeddings, model metadata, fallback backoff, tool detection, and context compaction, see `config.example.yaml`.
 
-## Smart-proxy context compaction
+Config path resolution order:
 
-kani can optionally reduce context pressure for long-running conversations by compacting oversized message histories before proxying upstream (Phase A) and by pre-computing summaries in the background for reuse on later requests (Phase B).
+1. `--config` flag
+2. `$KANI_CONFIG`
+3. `./config.yaml`
+4. `$XDG_CONFIG_HOME/kani/config.yaml`
+5. `/etc/kani/config.yaml`
 
-All compaction behavior is **opt-in and disabled by default**. When disabled or when compaction fails, kani routes and proxies requests unchanged.
+### Important: model IDs are provider-specific
 
-### Configuration
+kani does not rewrite model IDs. Configured model IDs are sent literally to the selected provider.
 
-Add a `smart_proxy` section to your `config.yaml`:
+For OpenRouter, use OpenRouter model IDs:
+
+```yaml
+primary: "anthropic/claude-sonnet-4"
+```
+
+For OpenAI, use OpenAI model IDs:
+
+```yaml
+primary: "gpt-4o"
+```
+
+To route the same profile to different providers, set `provider` on the model entry or tier.
+
+## Capability-aware routing
+
+kani detects required capabilities from the request and routes to a model that supports them. If no model in the scored tier has the required capabilities, kani escalates to higher tiers.
+
+| Capability | Trigger |
+|------------|---------|
+| `vision` | `image_url` content block in messages |
+| `tools` | `tools` or `functions` field by default; configurable |
+| `json_mode` | `response_format.type` is `json_object` or `json_schema` |
+
+Declare model metadata with prefix matching:
+
+```yaml
+model_rules:
+  - prefix: "anthropic/claude-"
+    capabilities: [vision, tools, json_mode]
+  - prefix: "google/gemini-"
+    capabilities: [vision, tools, json_mode]
+  - prefix: "gpt-4"
+    capabilities: [vision, tools, json_mode]
+```
+
+`model_rules` is the primary metadata key. The legacy `model_capabilities` key is accepted only when `model_rules` is unset.
+
+## API endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Main proxy, OpenAI-compatible |
+| `/v1/models` | GET | List available models |
+| `/v1/route` | POST | Return routing decision without proxying upstream |
+| `/admin/reload-config` | POST | Admin-only safe config hot reload |
+| `/health` | GET | Health and active config version metadata |
+
+## Debug routing
+
+Use `/v1/route` to see which tier and model kani would choose without sending the request upstream.
+
+```bash
+curl http://localhost:18420/v1/route \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kani/auto",
+    "messages": [
+      {"role": "user", "content": "write a detailed migration plan"}
+    ]
+  }'
+```
+
+For proxied requests, inspect response headers:
+
+```bash
+curl -i http://localhost:18420/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"kani/auto","messages":[{"role":"user","content":"hello"}]}'
+```
+
+Look for:
+
+- `X-Kani-Tier`
+- `X-Kani-Model`
+- `X-Kani-Score`
+- `X-Kani-Signals`
+
+## How it works
+
+```text
+Request → Distilled Feature Classifier → Tier + Agentic Score → Capability Filter → Model Selection → Upstream Provider
+                                                   │
+                                                   └─ model unavailable → conservative default
+```
+
+Classification pipeline:
+
+1. Deterministic `tokenCount` plus learned semantic dimensions.
+2. Separate complexity and reasoning scores drive tier selection.
+3. `agenticTask` is exposed as `agentic_score` without affecting tier.
+4. Missing feature model, embedding config, embedding request, or prediction path falls back to `MEDIUM`.
+5. Capability filtering detects vision, tools, and JSON mode requirements.
+
+Runtime routing does not call an LLM. LLM usage is limited to optional offline dataset annotation.
+
+## Scoring approach
+
+kani is distilled-feature-first:
+
+- compute `tokenCount` deterministically
+- infer 14 semantic dimensions with a learned multi-output classifier
+- compute separate complexity and reasoning axis scores
+- determine `SIMPLE`, `MEDIUM`, `COMPLEX`, or `REASONING`
+- expose `agentic_score` independently
+- return conservative default routing when feature scoring is unavailable
+
+Tier thresholds:
+
+- `REASONING`: `reasoning_score >= 0.75`
+- `COMPLEX`: `complexity_score >= 0.8`
+- `MEDIUM`: `complexity_score >= 0.5`
+- `SIMPLE`: below all thresholds
+
+Routing improves through retraining and calibration rather than runtime prompt engineering.
+
+## Advanced features
+
+### Smart-proxy context compaction
+
+Context compaction is opt-in and disabled by default. It can compact oversized message histories inline before proxying upstream and pre-compute summaries in the background for later reuse.
+
+Minimal shape:
 
 ```yaml
 smart_proxy:
   context_compaction:
-    enabled: true                        # master switch
-
+    enabled: true
     sync_compaction:
-      enabled: true                      # Phase A: compact inline before proxying
-      threshold_percent: 80.0            # compact when prompt ≥ 80% of context window
-      protect_first_n: 1                 # turns to keep at head of conversation
-      protect_last_n: 2                  # turns to keep at tail
-      summary_profile: ""                # empty = resolve through default_profile
-
+      enabled: true
+      threshold_percent: 80.0
     background_precompaction:
-      enabled: true                      # Phase B: pre-compute summaries async
-      trigger_percent: 70.0              # start background job at 70% usage
-      max_concurrency: 2                 # max parallel background jobs
-      summary_ttl_seconds: 3600
-
+      enabled: true
+      trigger_percent: 70.0
     session:
-      header_name: X-Kani-Session-Id    # client header for explicit session binding
-
-    context_window_tokens: 128000        # assumed context window for threshold math
+      header_name: X-Kani-Session-Id
+    context_window_tokens: 128000
 ```
 
-Summary generation is selected by routing profile. Set `summary_profile` to a profile such as `compress` to route summaries through that profile; leave it empty to fall back to `default_profile` via the router's normal model resolution.
-
-### Session identity
-
-kani uses a stable session key only when the client sends the configured explicit session header:
-
-1. **Explicit header** — value of `session.header_name` (required for Phase B cache hits, persistence, incremental summarization, and background precompaction)
-2. **No header** — no session ID is derived; inline compaction may still run for an oversized request, but cache reuse and background precompaction are unavailable
-
-The resolution mode is surfaced in the `X-Kani-Compaction-Session` response header as `explicit` or `none`.
-
-### Operator telemetry
-
-Each routed response includes compaction headers:
+Compaction headers:
 
 | Header | Values | Meaning |
 |--------|--------|---------|
@@ -361,80 +362,32 @@ Each routed response includes compaction headers:
 | `X-Kani-Compaction-Session` | `explicit` \| `none` | How session was resolved |
 | `X-Kani-Compaction-Saved-Tokens` | integer | Estimated tokens saved |
 
-Structured log fields are emitted at `INFO` level on every compaction decision. Failures are logged at `WARNING` level and never propagate to the client.
+Compaction state is persisted in SQLite under `$XDG_DATA_HOME/kani/compaction.db` by default. Override with `KANI_DATA_DIR`.
 
-### Safe config hot reload (admin)
+### Safe config hot reload
 
-Use admin-only config hot reload without restarting the proxy:
+Set `KANI_ADMIN_TOKEN` to enable admin-only config reload:
 
 ```bash
-# 1) set an admin token (separate from normal API keys)
 export KANI_ADMIN_TOKEN="your-admin-token"
-
-# 2) trigger reload after editing config.yaml
 curl -X POST http://localhost:18420/admin/reload-config \
   -H "Authorization: Bearer ${KANI_ADMIN_TOKEN}"
 ```
 
-Behavior:
+Reload validates with strict config validation. Changes to `host` or `port` are rejected with `409` and require restart.
 
-- Reload is applied only when strict config validation succeeds.
-- In-flight requests keep the state snapshot captured at request start.
-- Changes to `host` / `port` are rejected as non-reloadable with `409` and require process restart.
+### Routing logs and classifier training
 
-### Docker Compose / local deployment
+All routing decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl`, defaulting to `~/.local/state/kani/log/`.
 
-No additional services are required. Compaction state is persisted in SQLite under `$XDG_DATA_HOME/kani/compaction.db` (default: `~/.local/share/kani/compaction.db`). Override with `KANI_DATA_DIR`.
-
-```bash
-# Verify compaction is active after startup:
-curl -s http://localhost:18420/health | jq .
-# Inspect a routed request's compaction outcome:
-curl -v -X POST http://localhost:18420/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "X-Kani-Session-Id: my-session-1" \
-  -d '{"model":"kani/auto","messages":[{"role":"user","content":"hello"}]}' \
-  2>&1 | grep -i "x-kani-compaction"
-```
-
-## Offline feature annotation
-
-Runtime routing does not call an LLM. LLM usage is limited to offline dataset generation when logs are missing semantic labels.
-
-Optional annotator configuration (for `scripts/build_agentic_dataset.py --annotate-missing`) can be set in `config.yaml` under `feature_annotator`, or overridden with env vars:
-
-```yaml
-feature_annotator:
-  model: "gemini-2.5-flash-lite"
-  provider: "cliproxy"  # optional; defaults to default_provider
-```
-
-`feature_annotator` and `llm_classifier` connection details are provider-resolved. In `config.yaml`, set `model` + optional `provider`; do not set `base_url` or `api_key` directly in these sections.
-
-| Env var | Default | Description |
-|---------|---------|-------------|
-| `KANI_LLM_ANNOTATOR_MODEL` | `google/gemini-2.5-flash-lite` | Annotation model |
-| `KANI_LLM_ANNOTATOR_BASE_URL` | `https://openrouter.ai/api/v1` | API endpoint |
-| `KANI_LLM_ANNOTATOR_API_KEY` | `$OPENROUTER_API_KEY` | API key |
-
-Priority is: CLI flags > env vars > `config.yaml` `feature_annotator` > built-in defaults.
-
-## Routing logs
-
-All decisions are logged to `$XDG_STATE_HOME/kani/log/routing-YYYY-MM-DD.jsonl` (default: `~/.local/state/kani/log/`):
-
-```json
-{"timestamp":"2025-03-21T19:50:00","prompt_preview":"prove the Riemann...","tier":"REASONING","score":0.82,"confidence":0.87,"method":"distilled-features","agentic_score":1.0,"signals":{"tokenCount":38,"semanticLabels":{"reasoningMarkers":"high","agenticTask":"high"},"featureVersion":"v1"}}
-```
-
-Use these logs to build distilled feature training data:
+Use logs to build training data:
 
 ```bash
 uv run python scripts/build_agentic_dataset.py \
   --output data/distilled_feature_dataset.json
 ```
 
-When existing logs do not yet include semantic labels, you can annotate missing examples offline:
+Annotate missing semantic labels offline:
 
 ```bash
 uv run python scripts/build_agentic_dataset.py \
@@ -442,7 +395,7 @@ uv run python scripts/build_agentic_dataset.py \
   --output data/distilled_feature_dataset.json
 ```
 
-Then train the multi-output feature classifier bundle:
+Train the feature classifier bundle:
 
 ```bash
 uv run python scripts/train_classifier.py \
@@ -450,43 +403,19 @@ uv run python scripts/train_classifier.py \
   --output models
 ```
 
-This writes `models/feature_classifier.pkl` with the sklearn multi-output classifier, per-dimension label encoders, weights, thresholds, and embedding metadata.
+This writes `models/feature_classifier.pkl` with the classifier, label encoders, weights, thresholds, and embedding metadata.
 
-## API key authentication
+### Offline feature annotation
 
-kani supports API key authentication to restrict proxy access. Keys are managed via the CLI and stored in `$XDG_DATA_HOME/kani/api_keys.json`.
+Optional annotator configuration:
 
-**When no keys are configured, all requests pass through without authentication** (backward-compatible). As soon as one key is added, every API request must include a valid `Authorization: Bearer <key>` header.
-
-```bash
-# Create a key (auto-generated, shown once)
-kani keys add hermes
-#   kani-aBcDeFgH...  ← save this
-
-# List keys (prefix only, secrets are not stored in plaintext)
-kani keys list
-
-# Remove a key by name or prefix
-kani keys remove hermes
+```yaml
+feature_annotator:
+  model: "gemini-2.5-flash-lite"
+  provider: "openrouter"
 ```
 
-Using the key:
-
-```bash
-curl http://localhost:18420/v1/chat/completions \
-  -H "Authorization: Bearer kani-aBcDeFgH..." \
-  -H "Content-Type: application/json" \
-  -d '{"model": "kani/auto", "messages": [{"role": "user", "content": "hello"}]}'
-```
-
-```python
-client = OpenAI(
-    base_url="http://localhost:18420/v1",
-    api_key="kani-aBcDeFgH...",  # kani API key
-)
-```
-
-`/health` and `/docs` are exempt from authentication. No server restart required — keys take effect immediately.
+Priority is CLI flags, environment variables, `config.yaml` `feature_annotator`, then built-in defaults.
 
 ## CLI
 
@@ -501,13 +430,13 @@ kani keys remove <name|prefix>
 
 ## Architecture
 
-```
+```text
 src/kani/
-├── scorer.py    # distilled feature scoring (15-dimensional classifier)
-├── router.py    # Tier → model+provider mapping
+├── scorer.py    # distilled feature scoring
+├── router.py    # tier to model/provider mapping
 ├── proxy.py     # FastAPI OpenAI-compatible server
-├── config.py    # YAML config loading, env var resolution
-├── dirs.py      # XDG-compliant directory paths (config, data, logs)
+├── config.py    # YAML config loading and env var resolution
+├── dirs.py      # XDG-compliant directory paths
 ├── logger.py    # JSONL routing log
 └── cli.py       # Click CLI
 ```
@@ -515,15 +444,17 @@ src/kani/
 ## Development
 
 ```bash
-uv sync
-uv run pytest tests/ -q    # 176 tests
+uv sync --dev
 uv run ruff check src/
+uv run ruff format --check src/ tests/
 uv run pyright src/
+uv run pytest tests/ -q
+uv build
 ```
 
 ## Credits
 
-Scoring logic ported from [ClawRouter](https://github.com/BlockRunAI/ClawRouter) (MIT license).
+Scoring logic ported from [ClawRouter](https://github.com/BlockRunAI/ClawRouter) under the MIT license.
 
 ## License
 
