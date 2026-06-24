@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pickle
 
 import pytest
 from click.testing import CliRunner
@@ -411,8 +412,68 @@ model_rules:
   - prefix: gpt-4o
     capabilities:
       - tools
+embedding:
+  mode: api
+  provider: openrouter
+  model: openai/text-embedding-3-small
+  timeout_seconds: 1.5
 """
     )
+
+
+def _write_embedding_doctor_config(path) -> None:
+    path.write_text(
+        """
+default_provider: openrouter
+providers:
+  openrouter:
+    name: openrouter
+    base_url: https://openrouter.ai/api/v1
+profiles:
+  auto:
+    tiers:
+      SIMPLE:
+        primary: gpt-4o-mini
+embedding:
+  mode: disabled
+  timeout_seconds: 2.5
+"""
+    )
+
+
+class _DoctorClassifier:
+    def predict(self, embeddings):
+        return embeddings
+
+
+class _DoctorLabelEncoder:
+    def inverse_transform(self, values):
+        return ["low" for _ in values]
+
+
+def _write_doctor_feature_bundle(
+    models_dir, *, embedding_model: str = "doctor-model"
+) -> None:
+    from kani.scorer import SEMANTIC_DIMENSIONS
+
+    models_dir.mkdir(parents=True, exist_ok=True)
+    bundle = {
+        "classifier": _DoctorClassifier(),
+        "label_encoders": {
+            dimension: _DoctorLabelEncoder() for dimension in SEMANTIC_DIMENSIONS
+        },
+        "semantic_dimensions": list(SEMANTIC_DIMENSIONS),
+        "embedding_model": embedding_model,
+        "embedding_dim": 3,
+        "weights": {
+            "tokenCount": 0.2,
+            **{dimension: 1.0 for dimension in SEMANTIC_DIMENSIONS},
+        },
+        "tier_thresholds": {"SIMPLE": 0.2, "MEDIUM": 0.45, "COMPLEX": 0.7},
+        "feature_schema_version": "test-v1",
+    }
+    with (models_dir / "feature_classifier.pkl").open("wb") as f:
+        pickle.dump(bundle, f)
 
 
 class TestDoctorCommand:
@@ -449,6 +510,19 @@ class TestDoctorCommand:
         assert result.exit_code == 0
         assert "sk-test-secret" not in result.output
         assert "api_key" not in result.output
+
+    def test_doctor_reports_embedding_without_secrets(self, runner, empty_dir) -> None:
+        config_path = empty_dir / "config.yaml"
+        _write_doctor_config(config_path, api_key="sk-test-secret")
+
+        result = runner.invoke(main, ["doctor", "--config", str(config_path)])
+
+        assert result.exit_code == 0
+        assert (
+            "[OK] embedding: mode=api model=openai/text-embedding-3-small "
+            "timeout_seconds=1.5 default_only=false"
+        ) in result.output
+        assert "sk-test-secret" not in result.output
 
     def test_doctor_tier_classifier_legacy(self, runner, empty_dir) -> None:
         config_path = empty_dir / "config.yaml"
@@ -509,6 +583,28 @@ class TestDoctorCommand:
             in present_result.output
         )
         assert "default-only routing mode" in present_result.output
+
+    def test_doctor_reports_embedding_backend_without_secrets(
+        self, runner, empty_dir
+    ) -> None:
+        config_path = empty_dir / "config.yaml"
+        models_dir = empty_dir / "models"
+        _write_embedding_doctor_config(config_path)
+        _write_doctor_feature_bundle(models_dir)
+
+        result = runner.invoke(
+            main,
+            ["doctor", "--config", str(config_path), "--models-dir", str(models_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "[WARN] feature_classifier.pkl:" in result.output
+        assert "embedding_mode=disabled" in result.output
+        assert "embedding_model=" in result.output
+        assert "timeout_seconds=2.5" in result.output
+        assert "classifier_model=doctor-model" in result.output
+        assert "default_only=true" in result.output
+        assert "api_key" not in result.output
 
     def test_doctor_legacy_model_capabilities_warns_without_failing(
         self, runner, empty_dir

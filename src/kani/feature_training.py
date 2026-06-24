@@ -20,7 +20,7 @@ from sklearn.multioutput import MultiOutputClassifier
 from sklearn.preprocessing import LabelEncoder
 
 from kani.config import load_config
-from kani.scorer import SEMANTIC_DIMENSIONS
+from kani.scorer import SEMANTIC_DIMENSIONS, LocalEmbeddingBackend
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_MODEL_OPENROUTER = "openai/text-embedding-3-small"
@@ -49,8 +49,15 @@ DEFAULT_THRESHOLDS: dict[str, float] = {"SIMPLE": 0.2, "MEDIUM": 0.45, "COMPLEX"
 
 
 def get_embeddings(
-    client: OpenAI, texts: list[str], model: str = EMBEDDING_MODEL
+    client: OpenAI | LocalEmbeddingBackend,
+    texts: list[str],
+    model: str = EMBEDDING_MODEL,
 ) -> np.ndarray[Any, np.dtype[np.float32]]:
+    if isinstance(client, LocalEmbeddingBackend):
+        print(f"  Embedding {len(texts)} items locally with model={model}...")
+        rows = [client.embed(text) for text in texts]
+        return np.vstack(rows).astype(np.float32)
+
     all_embeddings: list[list[float]] = []
     for i in range(0, len(texts), BATCH_SIZE):
         batch = texts[i : i + BATCH_SIZE]
@@ -66,7 +73,7 @@ def get_embeddings(
 
 
 def load_or_compute_embeddings(
-    client: OpenAI,
+    client: OpenAI | LocalEmbeddingBackend,
     texts: list[str],
     cache_path: Path,
     model: str = EMBEDDING_MODEL,
@@ -88,7 +95,7 @@ def load_or_compute_embeddings(
     return embeddings
 
 
-def build_embedding_client() -> tuple[OpenAI, str]:
+def build_embedding_client() -> tuple[OpenAI | LocalEmbeddingBackend, str]:
     loaded = None
     cfg = None
     try:
@@ -98,11 +105,14 @@ def build_embedding_client() -> tuple[OpenAI, str]:
         pass
 
     if loaded and cfg:
-        if not cfg.enabled:
+        if cfg.effective_mode == "disabled":
             raise RuntimeError(
-                "Embedding is disabled in config; set embedding.enabled=true or remove "
+                "Embedding is disabled in config; set embedding.mode=api/local or remove "
                 "embedding config to use environment variables."
             )
+        if cfg.effective_mode == "local":
+            print(f"  Using local embedding model={cfg.local_model}")
+            return LocalEmbeddingBackend(cfg.local_model), cfg.local_model
         resolved = loaded.embedding_resolved()
         if resolved is not None:
             base_url, api_key = resolved
@@ -124,6 +134,31 @@ def build_embedding_client() -> tuple[OpenAI, str]:
 
     embedding_model = EMBEDDING_MODEL_OPENROUTER if base_url else EMBEDDING_MODEL
     return OpenAI(api_key=api_key, base_url=base_url), embedding_model
+
+
+def build_feature_classifier_bundle(
+    *,
+    classifier: Any,
+    label_encoders: dict[str, LabelEncoder],
+    semantic_dimensions: list[str],
+    embedding_model: str,
+    embedding_dim: int,
+    training_size: int,
+    class_distribution: dict[str, dict[str, int]],
+) -> dict[str, Any]:
+    """Build the persisted classifier bundle metadata."""
+    return {
+        "classifier": classifier,
+        "label_encoders": label_encoders,
+        "semantic_dimensions": semantic_dimensions,
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "training_size": training_size,
+        "class_distribution": class_distribution,
+        "weights": DEFAULT_WEIGHTS,
+        "tier_thresholds": DEFAULT_THRESHOLDS,
+        "feature_schema_version": "v1",
+    }
 
 
 def load_feature_examples(data_path: Path) -> tuple[list[str], dict[str, list[str]]]:
@@ -222,22 +257,17 @@ def train_feature_classifier(
             counts[label] = counts.get(label, 0) + 1
         class_distribution[dim] = counts
 
+    bundle = build_feature_classifier_bundle(
+        classifier=clf,
+        label_encoders=label_encoders,
+        semantic_dimensions=list(SEMANTIC_DIMENSIONS),
+        embedding_model=embedding_model,
+        embedding_dim=int(X.shape[1]),
+        training_size=len(prompts),
+        class_distribution=class_distribution,
+    )
     with open(model_path, "wb") as f:
-        pickle.dump(
-            {
-                "classifier": clf,
-                "label_encoders": label_encoders,
-                "semantic_dimensions": list(SEMANTIC_DIMENSIONS),
-                "embedding_model": embedding_model,
-                "embedding_dim": EMBEDDING_DIM,
-                "training_size": len(prompts),
-                "class_distribution": class_distribution,
-                "weights": DEFAULT_WEIGHTS,
-                "tier_thresholds": DEFAULT_THRESHOLDS,
-                "feature_schema_version": "v1",
-            },
-            f,
-        )
+        pickle.dump(bundle, f)
 
     print(f"Model saved to {model_path}")
     print(f"  Size: {model_path.stat().st_size / 1024:.1f} KB")

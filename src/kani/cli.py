@@ -62,22 +62,35 @@ def _classifier_asset_result(asset_name: str, models_dir: Path) -> DoctorResult:
         from kani.scorer import inspect_feature_classifier_runtime_status
 
         status = inspect_feature_classifier_runtime_status(models_dir)
+        embedding_summary = (
+            f"embedding_mode={status.embedding_mode} "
+            f"embedding_model={status.embedding_model} "
+            f"timeout_seconds={status.embedding_timeout_seconds} "
+            f"default_only={str(status.default_only).lower()}"
+        )
+        if status.classifier_model:
+            embedding_summary += f" classifier_model={status.classifier_model}"
+        if status.embedding_model_mismatch:
+            embedding_summary += " model_mismatch=true"
         if not status.exists:
             return DoctorResult(
                 "warn",
                 asset_name,
-                f"not found at {status.path}; default-only routing mode until a loadable classifier is installed",
+                f"not found at {status.path}; default-only routing mode until a loadable classifier is installed; {embedding_summary}",
             )
         if not status.loadable:
             return DoctorResult(
                 "warn",
                 asset_name,
-                f"present but unloadable at {status.path}; default-only routing mode ({status.message})",
+                f"present but unloadable at {status.path}; default-only routing mode ({status.message}); {embedding_summary}",
             )
+        severity = (
+            "warn" if status.default_only or status.embedding_model_mismatch else "ok"
+        )
         return DoctorResult(
-            "warn",
+            severity,
             asset_name,
-            "present and loadable by runtime, but request-time embedding was not verified",
+            f"{status.message}; {embedding_summary}",
         )
 
     if not asset_path.exists():
@@ -116,6 +129,29 @@ def _load_raw_config_keys(config_path: str | None) -> set[str]:
     if not isinstance(loaded, dict):
         return set()
     return {str(key) for key in loaded}
+
+
+def _embedding_result(cfg: object) -> DoctorResult:
+    embedding = getattr(cfg, "embedding", None)
+    if embedding is None:
+        return DoctorResult(
+            "warn",
+            "embedding",
+            "not configured; runtime classifier will use documented environment fallback or default-only mode",
+        )
+
+    mode = embedding.effective_mode
+    model = embedding.effective_model or "(none)"
+    default_only = mode == "disabled"
+    severity = "warn" if default_only else "ok"
+    return DoctorResult(
+        severity,
+        "embedding",
+        (
+            f"mode={mode} model={model} timeout_seconds={embedding.timeout_seconds} "
+            f"default_only={str(default_only).lower()}"
+        ),
+    )
 
 
 def _model_metadata_result(cfg: object, raw_config_keys: set[str]) -> DoctorResult:
@@ -173,6 +209,7 @@ def build_doctor_results(
     ]
 
     results.append(_model_metadata_result(cfg, raw_config_keys))
+    results.append(_embedding_result(cfg))
 
     results.append(_classifier_asset_result("tier_classifier.pkl", resolved_models_dir))
     results.append(
@@ -349,6 +386,16 @@ _STARTER_CONFIG = textwrap.dedent("""\
         name: openrouter
         base_url: "https://openrouter.ai/api/v1"
         api_key: "${OPENROUTER_API_KEY}"
+
+    # Runtime embeddings for the distilled feature classifier.
+    # mode: api | local | disabled. local mode requires local_model and optional
+    # sentence-transformers installation; disabled mode uses conservative fallback.
+    embedding:
+      mode: api
+      provider: openrouter
+      model: "openai/text-embedding-3-small"
+      timeout_seconds: 5.0
+      # local_model: "sentence-transformers/all-MiniLM-L6-v2"
 
     # ---------------------------------------------------------------------------
     # Routing Profiles

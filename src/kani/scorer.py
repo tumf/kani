@@ -22,7 +22,8 @@ log = logging.getLogger(__name__)
 
 RUNTIME_FEATURE_CLASSIFIER_SUPPORTED = True
 FEATURE_CLASSIFIER_FILENAME = "feature_classifier.pkl"
-FEATURE_EMBEDDING_TIMEOUT_SECONDS = 2.0
+FEATURE_EMBEDDING_TIMEOUT_SECONDS = 5.0
+EMBEDDING_TEXT_LIMIT = 4000
 
 FEATURE_DIMENSIONS: tuple[str, ...] = (
     "tokenCount",
@@ -90,6 +91,23 @@ class FeatureClassifierStatus:
     exists: bool
     loadable: bool
     message: str
+    embedding_mode: str = "api"
+    embedding_model: str = "text-embedding-3-small"
+    embedding_timeout_seconds: float = FEATURE_EMBEDDING_TIMEOUT_SECONDS
+    default_only: bool = False
+    classifier_model: str = ""
+    embedding_model_mismatch: bool = False
+
+
+@dataclass(frozen=True)
+class RuntimeEmbeddingSettings:
+    """Resolved runtime embedding backend settings."""
+
+    mode: str
+    model: str
+    base_url: str | None
+    api_key: str
+    timeout_seconds: float
 
 
 _DEFAULT_WEIGHTS: dict[str, float] = {
@@ -208,20 +226,40 @@ def _as_float_mapping(value: object, *, name: str) -> dict[str, float]:
     return {str(key): float(item) for key, item in value.items()}
 
 
-def _resolve_runtime_embedding_client() -> tuple[OpenAI, str]:
-    """Resolve runtime embedding client from config or environment variables."""
+def _resolve_runtime_embedding_settings() -> RuntimeEmbeddingSettings:
+    """Resolve runtime embedding settings from config or environment variables."""
     try:
         from kani.config import load_config
 
         loaded = load_config()
         cfg = loaded.embedding
         if cfg is not None:
-            if not cfg.enabled:
-                raise RuntimeError("embedding config is disabled")
+            if cfg.effective_mode == "disabled":
+                return RuntimeEmbeddingSettings(
+                    mode="disabled",
+                    model=cfg.effective_model,
+                    base_url=None,
+                    api_key="",
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+            if cfg.effective_mode == "local":
+                return RuntimeEmbeddingSettings(
+                    mode="local",
+                    model=cfg.local_model,
+                    base_url=None,
+                    api_key="",
+                    timeout_seconds=cfg.timeout_seconds,
+                )
             resolved = loaded.embedding_resolved()
             if resolved is not None:
                 base_url, api_key = resolved
-                return OpenAI(api_key=api_key or "dummy", base_url=base_url), cfg.model
+                return RuntimeEmbeddingSettings(
+                    mode="api",
+                    model=cfg.model,
+                    base_url=base_url,
+                    api_key=api_key,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
     except Exception as exc:
         log.debug("Runtime embedding config resolution failed: %s", exc, exc_info=True)
 
@@ -234,7 +272,55 @@ def _resolve_runtime_embedding_client() -> tuple[OpenAI, str]:
     embedding_model = (
         "openai/text-embedding-3-small" if base_url else "text-embedding-3-small"
     )
-    return OpenAI(api_key=api_key, base_url=base_url), embedding_model
+    return RuntimeEmbeddingSettings(
+        mode="api",
+        model=embedding_model,
+        base_url=base_url,
+        api_key=api_key,
+        timeout_seconds=FEATURE_EMBEDDING_TIMEOUT_SECONDS,
+    )
+
+
+def _resolve_runtime_embedding_client() -> tuple[OpenAI, str, float]:
+    """Resolve API embedding client for compatibility with older tests."""
+    settings = _resolve_runtime_embedding_settings()
+    if settings.mode != "api":
+        raise RuntimeError(f"embedding mode {settings.mode!r} does not use API client")
+    return (
+        OpenAI(api_key=settings.api_key or "dummy", base_url=settings.base_url),
+        settings.model,
+        settings.timeout_seconds,
+    )
+
+
+class LocalEmbeddingBackend:
+    """Lazy local embedding backend using sentence-transformers when installed."""
+
+    def __init__(self, model_name: str) -> None:
+        if not model_name:
+            raise RuntimeError("embedding.local_model is required for local mode")
+        self.model_name = model_name
+        self._model: Any | None = None
+
+    def _load_model(self) -> Any:
+        if self._model is None:
+            try:
+                from importlib import import_module
+
+                module = import_module("sentence_transformers")
+                sentence_transformer = getattr(module, "SentenceTransformer")
+            except (ImportError, AttributeError) as exc:
+                raise RuntimeError(
+                    "local embedding requires sentence-transformers to be installed"
+                ) from exc
+            self._model = sentence_transformer(self.model_name)
+        return self._model
+
+    def embed(self, text: str) -> np.ndarray[Any, np.dtype[np.float32]]:
+        model = self._load_model()
+        encoded = model.encode([text], normalize_embeddings=False)
+        embedding = np.asarray(encoded[0], dtype=np.float32)
+        return cast(np.ndarray[Any, np.dtype[np.float32]], embedding)
 
 
 class DistilledFeatureClassifier:
@@ -252,6 +338,9 @@ class DistilledFeatureClassifier:
         feature_schema_version: str,
         model_path: Path,
         embedding_timeout_seconds: float = FEATURE_EMBEDDING_TIMEOUT_SECONDS,
+        runtime_embedding_mode: str = "api",
+        runtime_embedding_model: str = "",
+        embedding_model_mismatch: bool = False,
     ) -> None:
         self.classifier = classifier
         self.label_encoders = label_encoders
@@ -262,6 +351,9 @@ class DistilledFeatureClassifier:
         self.feature_schema_version = feature_schema_version
         self.model_path = model_path
         self.embedding_timeout_seconds = embedding_timeout_seconds
+        self.runtime_embedding_mode = runtime_embedding_mode
+        self.runtime_embedding_model = runtime_embedding_model or embedding_model
+        self.embedding_model_mismatch = embedding_model_mismatch
 
     @classmethod
     def load(cls, feature_model_dir: Any | None = None) -> "DistilledFeatureClassifier":
@@ -329,10 +421,35 @@ class DistilledFeatureClassifier:
                 raise ValueError(f"missing label encoder for {dimension}")
             label_encoders[dimension] = encoder
 
+        bundle_embedding_model = str(bundle["embedding_model"])
+        try:
+            settings = _resolve_runtime_embedding_settings()
+        except Exception as exc:
+            log.debug(
+                "Runtime embedding settings unavailable during bundle load: %s", exc
+            )
+            settings = RuntimeEmbeddingSettings(
+                mode="api",
+                model=bundle_embedding_model,
+                base_url=None,
+                api_key="",
+                timeout_seconds=FEATURE_EMBEDDING_TIMEOUT_SECONDS,
+            )
+        embedding_model_mismatch = (
+            settings.mode != "disabled" and bundle_embedding_model != settings.model
+        )
+        if embedding_model_mismatch:
+            log.warning(
+                "Runtime embedding model mismatch bundle_model=%s runtime_mode=%s runtime_model=%s",
+                bundle_embedding_model,
+                settings.mode,
+                settings.model,
+            )
+
         return cls(
             classifier=classifier,
             label_encoders=label_encoders,
-            embedding_model=str(bundle["embedding_model"]),
+            embedding_model=bundle_embedding_model,
             embedding_dim=embedding_dim,
             weights=_as_float_mapping(bundle["weights"], name="weights"),
             tier_thresholds=_as_float_mapping(
@@ -340,6 +457,10 @@ class DistilledFeatureClassifier:
             ),
             feature_schema_version=str(bundle["feature_schema_version"]),
             model_path=model_path,
+            embedding_timeout_seconds=settings.timeout_seconds,
+            runtime_embedding_mode=settings.mode,
+            runtime_embedding_model=settings.model,
+            embedding_model_mismatch=embedding_model_mismatch,
         )
 
     def predict(self, text: str) -> tuple[dict[str, str], float]:
@@ -367,35 +488,65 @@ class DistilledFeatureClassifier:
         return semantic_labels, confidence
 
     def _embed_text(self, text: str) -> np.ndarray[Any, np.dtype[np.float32]]:
-        client, resolved_model = _resolve_runtime_embedding_client()
-        model = self.embedding_model or resolved_model
-        truncated_text = text[:4000]
+        try:
+            settings = _resolve_runtime_embedding_settings()
+        except Exception as exc:
+            log.debug("Runtime embedding settings unavailable before request: %s", exc)
+            settings = RuntimeEmbeddingSettings(
+                mode="api",
+                model=self.embedding_model,
+                base_url=None,
+                api_key="",
+                timeout_seconds=self.embedding_timeout_seconds,
+            )
+        if settings.mode == "disabled":
+            raise RuntimeError("embedding mode is disabled")
+
+        truncated_text = text[:EMBEDDING_TEXT_LIMIT]
+        timeout_seconds = settings.timeout_seconds
         log.debug(
-            "Requesting runtime embedding model=%s text_length=%d timeout=%s",
-            model,
+            "Requesting runtime embedding mode=%s model=%s text_length=%d timeout=%s",
+            settings.mode,
+            settings.model,
             len(truncated_text),
-            self.embedding_timeout_seconds,
+            timeout_seconds,
         )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                client.embeddings.create,
-                input=[truncated_text],
-                model=model,
-            )
+            if settings.mode == "api":
+                resolved = cast(Any, _resolve_runtime_embedding_client())
+                if len(resolved) == 2:
+                    client, _resolved_model = resolved
+                    model = self.embedding_model
+                    timeout_seconds = self.embedding_timeout_seconds
+                else:
+                    client, model, timeout_seconds = resolved
+                future = executor.submit(
+                    client.embeddings.create,
+                    input=[truncated_text],
+                    model=model,
+                )
+            elif settings.mode == "local":
+                backend = LocalEmbeddingBackend(settings.model)
+                future = executor.submit(backend.embed, truncated_text)
+            else:
+                raise RuntimeError(f"unsupported embedding mode: {settings.mode}")
             try:
-                response = future.result(timeout=self.embedding_timeout_seconds)
+                response = future.result(timeout=timeout_seconds)
             except concurrent.futures.TimeoutError as exc:
                 future.cancel()
                 raise TimeoutError("runtime embedding request timed out") from exc
 
-        data = getattr(response, "data", None)
-        if not data:
-            raise ValueError("embedding response did not include data")
-        values = getattr(data[0], "embedding", None)
-        if values is None:
-            raise ValueError("embedding response item did not include embedding")
-        embedding = np.asarray(values, dtype=np.float32)
+        if settings.mode == "local":
+            embedding = np.asarray(response, dtype=np.float32)
+        else:
+            data = getattr(response, "data", None)
+            if not data:
+                raise ValueError("embedding response did not include data")
+            values = getattr(data[0], "embedding", None)
+            if values is None:
+                raise ValueError("embedding response item did not include embedding")
+            embedding = np.asarray(values, dtype=np.float32)
         if embedding.shape != (self.embedding_dim,):
             raise ValueError(
                 "embedding dimension mismatch: "
@@ -409,6 +560,17 @@ def inspect_feature_classifier_runtime_status(
 ) -> FeatureClassifierStatus:
     """Return read-only feature classifier diagnostics without embedding calls."""
     model_path = _feature_classifier_path(feature_model_dir)
+    try:
+        settings = _resolve_runtime_embedding_settings()
+    except Exception:
+        settings = RuntimeEmbeddingSettings(
+            mode="api",
+            model="(environment fallback)",
+            base_url=None,
+            api_key="",
+            timeout_seconds=FEATURE_EMBEDDING_TIMEOUT_SECONDS,
+        )
+
     if not model_path.exists():
         return FeatureClassifierStatus(
             supported=RUNTIME_FEATURE_CLASSIFIER_SUPPORTED,
@@ -416,10 +578,14 @@ def inspect_feature_classifier_runtime_status(
             exists=False,
             loadable=False,
             message="absent; routing will use default-only fallback until trained model is installed",
+            embedding_mode=settings.mode,
+            embedding_model=settings.model,
+            embedding_timeout_seconds=settings.timeout_seconds,
+            default_only=True,
         )
 
     try:
-        DistilledFeatureClassifier.load(feature_model_dir)
+        classifier = DistilledFeatureClassifier.load(feature_model_dir)
     except Exception as exc:
         return FeatureClassifierStatus(
             supported=RUNTIME_FEATURE_CLASSIFIER_SUPPORTED,
@@ -427,6 +593,21 @@ def inspect_feature_classifier_runtime_status(
             exists=True,
             loadable=False,
             message=f"unloadable ({type(exc).__name__}); routing will use default-only fallback",
+            embedding_mode=settings.mode,
+            embedding_model=settings.model,
+            embedding_timeout_seconds=settings.timeout_seconds,
+            default_only=True,
+        )
+
+    default_only = settings.mode == "disabled"
+    message = "loadable by runtime; activation still requires embedding configuration at request time"
+    if default_only:
+        message = (
+            "loadable but embedding is disabled; routing will use default-only fallback"
+        )
+    elif classifier.embedding_model_mismatch:
+        message = (
+            "loadable with embedding model mismatch; learned classifier may fall back"
         )
 
     return FeatureClassifierStatus(
@@ -434,7 +615,13 @@ def inspect_feature_classifier_runtime_status(
         path=model_path,
         exists=True,
         loadable=True,
-        message="loadable by runtime; activation still requires embedding configuration at request time",
+        message=message,
+        embedding_mode=settings.mode,
+        embedding_model=settings.model,
+        embedding_timeout_seconds=settings.timeout_seconds,
+        default_only=default_only,
+        classifier_model=classifier.embedding_model,
+        embedding_model_mismatch=classifier.embedding_model_mismatch,
     )
 
 
@@ -557,20 +744,32 @@ class Scorer:
             dimensions=dimensions,
         )
 
+    def _default_result(self) -> ClassificationResult:
+        return ClassificationResult(
+            score=0.0,
+            tier=self.config.fallback_tier,
+            confidence=self.config.fallback_confidence,
+            signals={"method": {"raw": "default", "matches": 0}},
+            agentic_score=0.0,
+            dimensions=[],
+        )
+
     def classify(self, text: str) -> ClassificationResult:
         log.debug("Scoring classification input text_length=%d", len(text))
         try:
             result = self._classify_with_features(text)
+        except TimeoutError as exc:
+            log.warning("Runtime embedding timed out, using default fallback: %s", exc)
+            result = self._default_result()
+        except RuntimeError as exc:
+            if "embedding mode is disabled" in str(exc):
+                log.info("Runtime embedding disabled, using default fallback")
+            else:
+                log.exception("Feature classification failed, using default fallback")
+            result = self._default_result()
         except Exception:
             log.exception("Feature classification failed, using default fallback")
-            result = ClassificationResult(
-                score=0.0,
-                tier=self.config.fallback_tier,
-                confidence=self.config.fallback_confidence,
-                signals={"method": {"raw": "default", "matches": 0}},
-                agentic_score=0.0,
-                dimensions=[],
-            )
+            result = self._default_result()
 
         if self._enable_routing_log:
             from kani.logger import RoutingLogger
