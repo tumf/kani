@@ -28,6 +28,7 @@
 **When** configuration is loaded and runtime classification requests embeddings
 **Then** kani MUST use the configured API embedding model and provider/base URL
 **And** kani MUST apply `embedding.timeout_seconds` to the runtime embedding call
+**And** the documented API embedding default or recommended value MUST account for Docker, network, first-connection, and provider latency rather than assuming a local-only 2-second budget
 **And** kani MUST NOT expose the resolved API key in diagnostics or logs
 
 #### Scenario: local embedding mode is accepted

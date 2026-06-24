@@ -49,6 +49,7 @@ Keep learned classifier semantics unchanged: successful embedding + classifier p
 - Invalid embedding mode or invalid timeout is rejected during config validation.
 - Training and runtime verification detect or surface embedding model/dimension mismatches before silently using an incompatible classifier bundle.
 - Runtime embedding timeouts log a concise warning rather than noisy exception stack traces for expected degraded fallback.
+- API embedding timeout is operator-configurable with a documented default/recommended value that is not tuned only for local low-latency embeddings.
 - No heuristic keyword/substr/rule-based semantic fallback is introduced.
 
 ## Explicit Completion Conditions
