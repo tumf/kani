@@ -233,16 +233,6 @@ providers:
     base_url: "http://127.0.0.1:8317/v1"
     api_key: "local-test-key"
 
-embedding:
-  # api: call an OpenAI-compatible embeddings endpoint at route time.
-  # local: use a lazily loaded local embedding model; install sentence-transformers separately.
-  # disabled: skip learned semantic classification and use the conservative default tier.
-  mode: api  # api | local | disabled
-  provider: openrouter      # optional; defaults to default_provider when set
-  model: "openai/text-embedding-3-small"
-  timeout_seconds: 5.0
-  # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required for mode: local
-
 profiles:
   auto:
     tiers:
