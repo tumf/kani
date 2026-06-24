@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 import kani.proxy as proxy_mod
-from kani.config import KaniConfig, ModelRuleEntry, ProviderConfig
+from kani.config import ContentPartPolicy, KaniConfig, ModelRuleEntry, ProviderConfig
 from kani.proxy import RuntimeState, app, configure
 from kani.router import Router, RoutingDecision
 from kani.scorer import ClassificationResult, Tier
@@ -66,16 +66,15 @@ def _config_text(
       max_concurrency: {compaction_concurrency}
 """.format(compaction_concurrency=compaction_concurrency)
         )
-    if fallback_backoff_enabled:
-        smart_proxy_sections.append(
-            """
+    smart_proxy_sections.append(
+        f"""
   fallback_backoff:
-    enabled: true
+    enabled: {str(fallback_backoff_enabled).lower()}
     initial_delay_seconds: 5
     multiplier: 2
     max_delay_seconds: 60
 """
-        )
+    )
     if tools_capability_detection is not None:
         smart_proxy_sections.append(
             f"  tools_capability_detection: {tools_capability_detection}\n"
@@ -379,6 +378,116 @@ class TestReasoningContentCompatibility:
         assert "reasoning_content" not in sanitized["messages"][0]
         assert body["messages"][0]["reasoning_content"] == "private chain"
         assert deepcopy.call_count == 0
+
+    def test_model_rule_content_part_policy_normalizes_by_candidate_metadata(self):
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://dummy.example",
+                ),
+            },
+            model_rules=[
+                ModelRuleEntry(
+                    prefix="cx/gpt-5.5",
+                    provider="dummy",
+                    content_part_policy=ContentPartPolicy(
+                        mode="normalize",
+                        allowed_types=["text", "image_url"],
+                        text_types=["input_text", "output_text", "reasoning"],
+                        image_types=["input_image"],
+                        unknown="text",
+                    ),
+                )
+            ],
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+        body: dict[str, Any] = {
+            "model": "cx/gpt-5.5",
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "answer"},
+                        {"type": "reasoning", "summary": [{"text": "thought"}]},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_image", "image_url": "file-123"},
+                    ],
+                },
+            ],
+        }
+
+        normalized = proxy_mod._normalize_message_content_for_candidate(
+            body, "cx/gpt-5.5", "dummy", state
+        )
+
+        assert normalized is not body
+        assert normalized["messages"][0]["content"] == [
+            {"type": "text", "text": "answer"},
+            {
+                "type": "text",
+                "text": '{"type":"reasoning","summary":[{"text":"thought"}]}',
+            },
+        ]
+        assert normalized["messages"][1]["content"] == [
+            {"type": "text", "text": "hello"},
+            {"type": "image_url", "image_url": {"url": "file-123", "detail": "auto"}},
+        ]
+        assert body["messages"][0]["content"][0]["type"] == "output_text"
+
+    def test_model_rule_content_part_policy_uses_provider_specific_precedence(self):
+        cfg = KaniConfig(
+            providers={
+                "dummy": ProviderConfig(
+                    name="dummy",
+                    base_url="http://dummy.example",
+                ),
+                "other": ProviderConfig(
+                    name="other",
+                    base_url="http://other.example",
+                ),
+            },
+            model_rules=[
+                ModelRuleEntry(
+                    prefix="cx/gpt-5.5",
+                    content_part_policy=ContentPartPolicy(
+                        mode="normalize", unknown="text"
+                    ),
+                ),
+                ModelRuleEntry(
+                    prefix="*",
+                    provider="dummy",
+                    content_part_policy=ContentPartPolicy(mode="preserve"),
+                ),
+            ],
+        )
+        state = RuntimeState(
+            config_path=None,
+            config=cfg,
+            router=Router(cfg),
+            fallback_backoff_state=Router(cfg).fallback_backoff_state,
+            config_loaded_at="test",
+            version=1,
+        )
+
+        assert proxy_mod._get_model_content_part_policy(
+            "cx/gpt-5.5", "dummy", state
+        ) == ContentPartPolicy(mode="preserve")
+        assert proxy_mod._get_model_content_part_policy(
+            "cx/gpt-5.5", "other", state
+        ) == ContentPartPolicy(mode="normalize", unknown="text")
 
     def test_config_text_accepts_optional_fragments_without_trailing_newline(
         self, tmp_path: Path

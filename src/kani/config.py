@@ -66,6 +66,17 @@ class ConfigIncompleteError(Exception):
 # ---------------------------------------------------------------------------
 
 
+class ContentPartPolicy(BaseModel):
+    """Candidate-specific message content part normalization policy."""
+
+    mode: Literal["preserve", "normalize"] = "preserve"
+    allowed_types: list[str] = Field(default_factory=list)
+    text_types: list[str] = Field(default_factory=list)
+    image_types: list[str] = Field(default_factory=list)
+    drop_types: list[str] = Field(default_factory=list)
+    unknown: Literal["preserve", "text", "drop"] = "preserve"
+
+
 class ProviderConfig(BaseModel):
     """A backend LLM provider (OpenRouter, Anthropic, local proxy, etc.)."""
 
@@ -265,7 +276,7 @@ class ContextCompactionConfig(BaseModel):
 class FallbackBackoffConfig(BaseModel):
     """Configuration for process-local fallback exponential backoff."""
 
-    enabled: bool = False
+    enabled: bool = True
     initial_delay_seconds: float = Field(default=5.0, ge=0.0)
     multiplier: float = Field(default=2.0, ge=1.0)
     max_delay_seconds: float = Field(default=300.0, ge=0.0)
@@ -319,6 +330,7 @@ class ModelRuleEntry(BaseModel):
         Literal["openai", "xai", "anthropic", "dashscope", "gemini", "none"] | None
     ) = None
     supports_reasoning_content: bool | None = None
+    content_part_policy: ContentPartPolicy | None = None
 
 
 ModelCapabilityEntry = ModelRuleEntry

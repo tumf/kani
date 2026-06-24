@@ -44,7 +44,7 @@ from kani.compaction_store import (
     snapshot_hash,
     upsert_session,
 )
-from kani.config import KaniConfig, load_config
+from kani.config import ContentPartPolicy, KaniConfig, load_config
 from kani.dashboard import (
     dashboard_needs_stderr_backfill,
     get_dashboard_stats,
@@ -969,7 +969,7 @@ async def _try_with_fallbacks(
     runtime = state or _require_runtime_state()
 
     # Try primary
-    primary_body = _sanitize_reasoning_content_for_candidate(
+    primary_body = _prepare_body_for_candidate(
         body, decision.model, decision.provider, runtime
     )
     result = await _proxy_upstream(
@@ -1043,9 +1043,7 @@ async def _try_with_fallbacks(
                 fb_normalized_effort,
                 fb.provider,
             )
-        fb_body = _sanitize_reasoning_content_for_candidate(
-            fb_body, fb.model, fb.provider, runtime
-        )
+        fb_body = _prepare_body_for_candidate(fb_body, fb.model, fb.provider, runtime)
         result = await _proxy_upstream(
             fb.base_url.rstrip("/"),
             fb.api_key or "",
@@ -1124,6 +1122,29 @@ def _get_reasoning_style_for_candidate(
     return _get_model_reasoning_style(
         model, provider_name, runtime
     ) or _get_provider_reasoning_style(provider_name, runtime)
+
+
+def _get_model_content_part_policy(
+    model: str, provider_name: str, runtime: RuntimeState
+) -> ContentPartPolicy | None:
+    best_policy: ContentPartPolicy | None = None
+    best_score: tuple[int, int] = (-1, -1)
+    for entry in runtime.config.model_rules:
+        prefix_matches = entry.prefix == "*" or model.startswith(entry.prefix)
+        if not prefix_matches:
+            continue
+        if entry.provider and entry.provider != provider_name:
+            continue
+        if entry.content_part_policy is None:
+            continue
+        score = (
+            1 if entry.provider else 0,
+            0 if entry.prefix == "*" else len(entry.prefix),
+        )
+        if score > best_score:
+            best_score = score
+            best_policy = entry.content_part_policy
+    return best_policy
 
 
 def _get_model_reasoning_content_support(
@@ -1210,6 +1231,118 @@ def _sanitize_reasoning_content_for_candidate(
         removed_count,
     )
     return sanitized_body
+
+
+def _text_from_content_part(part: dict[str, Any]) -> str:
+    for key in ("text", "content", "output"):
+        value = part.get(key)
+        if isinstance(value, str):
+            return value
+    return json.dumps(part, ensure_ascii=False, separators=(",", ":"))
+
+
+def _image_url_from_content_part(part: dict[str, Any]) -> dict[str, Any] | None:
+    image_url = part.get("image_url")
+    if isinstance(image_url, str):
+        return {"url": image_url, "detail": part.get("detail", "auto")}
+    if isinstance(image_url, dict):
+        return image_url
+    file_id = part.get("file_id")
+    if isinstance(file_id, str):
+        return {"url": file_id, "detail": part.get("detail", "auto")}
+    return None
+
+
+def _normalize_content_part(
+    part: dict[str, Any], policy: ContentPartPolicy
+) -> dict[str, Any] | None:
+    part_type = str(part.get("type") or "")
+    if part_type in policy.drop_types:
+        return None
+    if part_type in policy.text_types:
+        return {"type": "text", "text": _text_from_content_part(part)}
+    if part_type in policy.image_types:
+        image_url = _image_url_from_content_part(part)
+        if image_url is None:
+            return (
+                None
+                if policy.unknown == "drop"
+                else {"type": "text", "text": _text_from_content_part(part)}
+            )
+        return {"type": "image_url", "image_url": image_url}
+    if part_type in policy.allowed_types:
+        return part
+    if policy.unknown == "text":
+        return {"type": "text", "text": _text_from_content_part(part)}
+    if policy.unknown == "drop":
+        return None
+    return part
+
+
+def _normalize_message_content_for_candidate(
+    body: dict[str, Any], model: str, provider_name: str, runtime: RuntimeState
+) -> dict[str, Any]:
+    policy = _get_model_content_part_policy(model, provider_name, runtime)
+    if policy is None or policy.mode == "preserve":
+        return body
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+
+    changed_indexes: list[int] = []
+    normalized_messages = list(messages)
+    normalized_parts_count = 0
+    removed_parts_count = 0
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict) or not isinstance(msg.get("content"), list):
+            continue
+        next_content: list[Any] = []
+        changed = False
+        for part in msg["content"]:
+            if not isinstance(part, dict):
+                next_content.append(part)
+                continue
+            normalized_part = _normalize_content_part(part, policy)
+            if normalized_part is None:
+                changed = True
+                removed_parts_count += 1
+                continue
+            if normalized_part != part:
+                changed = True
+                normalized_parts_count += 1
+            next_content.append(normalized_part)
+        if changed:
+            next_msg = dict(msg)
+            next_msg["content"] = next_content or ""
+            normalized_messages[idx] = next_msg
+            changed_indexes.append(idx)
+
+    if not changed_indexes:
+        return body
+
+    normalized_body = dict(body)
+    normalized_body["messages"] = normalized_messages
+    logger.debug(
+        "MESSAGE_CONTENT normalized model=%s provider=%s changed_messages=%d normalized_parts=%d removed_parts=%d",
+        model,
+        provider_name,
+        len(changed_indexes),
+        normalized_parts_count,
+        removed_parts_count,
+    )
+    return normalized_body
+
+
+def _prepare_body_for_candidate(
+    body: dict[str, Any], model: str, provider_name: str, runtime: RuntimeState
+) -> dict[str, Any]:
+    prepared = _sanitize_reasoning_content_for_candidate(
+        body, model, provider_name, runtime
+    )
+    return _normalize_message_content_for_candidate(
+        prepared, model, provider_name, runtime
+    )
 
 
 def _has_explicit_reasoning_control(body: dict[str, Any]) -> bool:
