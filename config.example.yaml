@@ -78,6 +78,23 @@ default_profile: auto
 #     context_window_tokens: 128000
 
 # ---------------------------------------------------------------------------
+# Runtime embeddings for the distilled feature classifier
+# ---------------------------------------------------------------------------
+# mode:
+#   - api: call an OpenAI-compatible embedding provider at route time
+#   - local: compute embeddings in-process with local_model; install deps separately
+#   - disabled: skip learned semantic classification and use conservative defaults
+# timeout_seconds bounds request-time embedding work before safe fallback.
+# Keep model/local_model compatible with the model identity stored in trained
+# models/feature_classifier.pkl.
+embedding:
+    mode: api  # api | local | disabled
+    provider: openrouter
+    model: "openai/text-embedding-3-small"
+    timeout_seconds: 5.0
+    # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required for mode: local
+
+# ---------------------------------------------------------------------------
 # Model Rules (prefix-based metadata)
 # ---------------------------------------------------------------------------
 # Declare model metadata using prefix matching.

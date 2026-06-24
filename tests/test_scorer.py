@@ -12,6 +12,8 @@ import numpy as np
 
 from kani.scorer import (
     DistilledFeatureClassifier,
+    LocalEmbeddingBackend,
+    RuntimeEmbeddingSettings,
     SEMANTIC_DIMENSIONS,
     ClassificationResult,
     Scorer,
@@ -176,23 +178,165 @@ class TestDistilledFeatureScorer:
         assert result.signals["method"]["raw"] == "default"
         assert result.dimensions == []
 
-    def test_embedding_timeout_returns_default_fallback(self, tmp_path) -> None:
+    def test_embedding_timeout_returns_default_fallback(self, tmp_path, caplog) -> None:
         _write_bundle(tmp_path)
         embedding_client = _FakeEmbeddingClient([0.1, 0.2, 0.3], delay=0.05)
 
-        with patch(
-            "kani.scorer._resolve_runtime_embedding_client",
-            return_value=(embedding_client, "unused-model"),
+        with (
+            patch(
+                "kani.scorer._resolve_runtime_embedding_settings",
+                return_value=RuntimeEmbeddingSettings(
+                    mode="api",
+                    model="text-embedding-test",
+                    base_url="http://example.test/v1",
+                    api_key="test-key",
+                    timeout_seconds=0.001,
+                ),
+            ),
+            patch(
+                "kani.scorer._resolve_runtime_embedding_client",
+                return_value=(embedding_client, "text-embedding-test", 0.001),
+            ),
+            caplog.at_level("WARNING"),
         ):
-            scorer = Scorer(feature_model_dir=tmp_path, enable_routing_log=False)
-            classifier = DistilledFeatureClassifier.load(tmp_path)
-            classifier.embedding_timeout_seconds = 0.001
-            scorer._feature_classifier = classifier
-            scorer._feature_classifier_load_attempted = True
-            result = scorer.classify("hello")
+            result = Scorer(
+                feature_model_dir=tmp_path, enable_routing_log=False
+            ).classify("hello")
 
         assert result.signals["method"]["raw"] == "default"
         assert result.confidence == 0.35
+        assert "Runtime embedding timed out, using default fallback" in caplog.text
+        assert "Traceback" not in caplog.text
+
+    def test_api_embedding_uses_configured_model_and_timeout(self, tmp_path) -> None:
+        _write_bundle(tmp_path)
+        embedding_client = _FakeEmbeddingClient([0.1, 0.2, 0.3])
+
+        with (
+            patch(
+                "kani.scorer._resolve_runtime_embedding_settings",
+                return_value=RuntimeEmbeddingSettings(
+                    mode="api",
+                    model="configured-embedding",
+                    base_url="http://example.test/v1",
+                    api_key="test-key",
+                    timeout_seconds=1.25,
+                ),
+            ),
+            patch(
+                "kani.scorer._resolve_runtime_embedding_client",
+                return_value=(embedding_client, "configured-embedding", 1.25),
+            ),
+        ):
+            classifier = DistilledFeatureClassifier.load(tmp_path)
+            classifier.predict("hello")
+
+        assert embedding_client.embeddings.calls == [
+            {"input": ["hello"], "model": "configured-embedding"}
+        ]
+
+    def test_local_embedding_backend_does_not_call_api(self, tmp_path) -> None:
+        _write_bundle(tmp_path)
+        api_client = _FakeEmbeddingClient([9.0, 9.0, 9.0])
+
+        with (
+            patch(
+                "kani.scorer._resolve_runtime_embedding_settings",
+                return_value=RuntimeEmbeddingSettings(
+                    mode="local",
+                    model="local-test-model",
+                    base_url=None,
+                    api_key="",
+                    timeout_seconds=1.0,
+                ),
+            ),
+            patch.object(
+                LocalEmbeddingBackend,
+                "embed",
+                return_value=np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+            ),
+            patch(
+                "kani.scorer._resolve_runtime_embedding_client",
+                return_value=(api_client, "should-not-use", 1.0),
+            ),
+        ):
+            result = Scorer(
+                feature_model_dir=tmp_path, enable_routing_log=False
+            ).classify("hello")
+
+        assert result.signals["method"]["raw"] == "distilled-features"
+        assert api_client.embeddings.calls == []
+
+    def test_embedding_disabled_returns_default_fallback(self, tmp_path) -> None:
+        _write_bundle(tmp_path)
+
+        with patch(
+            "kani.scorer._resolve_runtime_embedding_settings",
+            return_value=RuntimeEmbeddingSettings(
+                mode="disabled",
+                model="",
+                base_url=None,
+                api_key="",
+                timeout_seconds=1.0,
+            ),
+        ):
+            result = Scorer(
+                feature_model_dir=tmp_path, enable_routing_log=False
+            ).classify("hello")
+
+        assert result.tier == Tier.MEDIUM
+        assert result.confidence == 0.35
+        assert result.score == 0.0
+        assert result.signals["method"]["raw"] == "default"
+
+    def test_embedding_model_mismatch_is_warned(self, tmp_path, caplog) -> None:
+        _write_bundle(tmp_path)
+
+        with (
+            patch(
+                "kani.scorer._resolve_runtime_embedding_settings",
+                return_value=RuntimeEmbeddingSettings(
+                    mode="api",
+                    model="different-runtime-model",
+                    base_url="http://example.test/v1",
+                    api_key="test-key",
+                    timeout_seconds=1.0,
+                ),
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            classifier = DistilledFeatureClassifier.load(tmp_path)
+
+        assert classifier.embedding_model_mismatch is True
+        assert "Runtime embedding model mismatch" in caplog.text
+
+    def test_embedding_dimension_mismatch_returns_default_fallback(
+        self, tmp_path
+    ) -> None:
+        _write_bundle(tmp_path, _bundle(embedding_dim=4))
+
+        with (
+            patch(
+                "kani.scorer._resolve_runtime_embedding_settings",
+                return_value=RuntimeEmbeddingSettings(
+                    mode="local",
+                    model="local-test-model",
+                    base_url=None,
+                    api_key="",
+                    timeout_seconds=1.0,
+                ),
+            ),
+            patch.object(
+                LocalEmbeddingBackend,
+                "embed",
+                return_value=np.asarray([0.1, 0.2, 0.3], dtype=np.float32),
+            ),
+        ):
+            result = Scorer(
+                feature_model_dir=tmp_path, enable_routing_log=False
+            ).classify("hello")
+
+        assert result.signals["method"]["raw"] == "default"
 
     def test_prediction_failure_returns_default_fallback(self, tmp_path) -> None:
         _write_bundle(tmp_path, _bundle(classifier=_FakeClassifier(fail=True)))

@@ -39,3 +39,9 @@ dev = [
 
 [tool.uv.build-backend]
 module-name = "kani"
+
+[tool.pytest.ini_options]
+addopts = "-m 'not heavy'"
+markers = [
+    "heavy: tests that take over 1 second or require heavy imports",
+]

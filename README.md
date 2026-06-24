@@ -233,6 +233,16 @@ providers:
     base_url: "http://127.0.0.1:8317/v1"
     api_key: "local-test-key"
 
+embedding:
+  # api: call an OpenAI-compatible embeddings endpoint at route time.
+  # local: use a lazily loaded local embedding model; install sentence-transformers separately.
+  # disabled: skip learned semantic classification and use the conservative default tier.
+  mode: api  # api | local | disabled
+  provider: openrouter      # optional; defaults to default_provider when set
+  model: "openai/text-embedding-3-small"
+  timeout_seconds: 5.0
+  # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required for mode: local
+
 profiles:
   auto:
     tiers:
@@ -255,6 +265,16 @@ profiles:
         fallback: ["anthropic/claude-sonnet-4.6"]
       # provider: per-tier override (optional)
 
+embedding:
+  # api: use provider/base_url below; local: no external API call; disabled: default-only routing
+  mode: api  # api | local | disabled
+  model: "openai/text-embedding-3-small"
+  provider: openrouter
+  # base_url: "http://127.0.0.1:8317/v1"  # optional direct API endpoint
+  # api_key: "${EMBEDDING_API_KEY}"       # optional direct API key
+  timeout_seconds: 5.0
+  # local_model: "sentence-transformers/all-MiniLM-L6-v2"  # required when mode=local
+
 smart_proxy:
   # Tools capability routing policy:
   # - declared (default): tools/functions declarations require a tools-capable model
@@ -273,12 +293,21 @@ smart_proxy:
 ```
 
 - `${VAR}` syntax resolves environment variables
+- `embedding.mode: api` uses the configured embedding `provider`/`model`/`timeout_seconds`; secrets still come from provider `api_key` env placeholders or explicit embedding `api_key`
+- `embedding.mode: local` uses `embedding.local_model` and does not call an external embeddings API at route time; install local embedding dependencies separately
+- `embedding.mode: disabled` skips the learned semantic classifier and returns the conservative default classification (`MEDIUM`, confidence `0.35`) before routing
+- Training records the effective embedding model identity and dimension in `models/feature_classifier.pkl`; keep runtime embedding model/local_model compatible with the trained bundle
 - Provider resolution order is: model-entry `provider` > tier-level `provider` > `default_provider`
 - Configured model IDs are sent literally to the selected provider; `anthropic/claude-sonnet-4.6` is not parsed by kani as a provider selector unless you also set a `provider` field
 - `primary` accepts a string, `{model, provider, max_input_tokens}` object, or a list of those; list entries are selected **round-robin** per `profile+tier` combination
 - `fallback` accepts the same string/object entries as `primary`; object entries can set `max_input_tokens` so candidates with a known input limit lower than the estimated prompt tokens are skipped
 - Candidates without `max_input_tokens` remain eligible because their input limit is unknown
 - `fallback: null` is accepted only at `profiles.*.tiers.*.fallback` and normalized to `[]`
+- `embedding.mode: api` uses `embedding.provider` or direct `embedding.base_url` / `embedding.api_key`, sends `embedding.model`, and applies `timeout_seconds`
+- `embedding.mode: local` uses `embedding.local_model` through a lazily imported local backend; install local embedding dependencies separately and keep its output dimension compatible with the trained classifier bundle
+- `embedding.mode: disabled` skips learned semantic classification and returns conservative default routing (`MEDIUM`, confidence `0.35`) without heuristic semantic fallback
+- Legacy `embedding.enabled: false` is treated as `embedding.mode: disabled`
+- `kani doctor` reports embedding mode/model/timeout and never prints API keys
 - When primary fails, fallback attempts skip the failed primary candidate and deduplicate repeated `model+provider` entries
 - `smart_proxy.fallback_backoff` enables process-local exponential cooldowns for retryable non-streaming `429` / `5xx` failures, keyed by `model+provider`
 - Cooled-down `model+provider` pairs are skipped during both primary selection and fallback execution; the same model on a different provider remains eligible

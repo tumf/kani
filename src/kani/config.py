@@ -215,13 +215,39 @@ class FeatureAnnotatorConfig(_AuxLLMConfigBase):
 
 
 class EmbeddingConfig(BaseModel):
-    """Configuration for embedding API used by training and scoring."""
+    """Configuration for embeddings used by training and scoring."""
 
     enabled: bool = True
+    mode: Literal["api", "local", "disabled"] = "api"
+    timeout_seconds: float = Field(default=5.0, gt=0.0)
+    local_model: str = ""
     model: str = "text-embedding-3-small"
     provider: str = ""
     base_url: str = ""
     api_key: str = ""
+
+    @model_validator(mode="after")
+    def _normalize_legacy_enabled(self) -> "EmbeddingConfig":
+        """Preserve legacy enabled=false as explicit disabled mode."""
+        if not self.enabled:
+            self.mode = "disabled"
+        if self.mode == "local" and not self.local_model:
+            raise ValueError(
+                "embedding.local_model is required when embedding.mode=local"
+            )
+        return self
+
+    @property
+    def effective_mode(self) -> Literal["api", "local", "disabled"]:
+        """Return normalized embedding mode."""
+        if not self.enabled:
+            return "disabled"
+        return self.mode
+
+    @property
+    def effective_model(self) -> str:
+        """Return the runtime embedding model identity for diagnostics."""
+        return self.local_model if self.effective_mode == "local" else self.model
 
 
 class SyncCompactionConfig(BaseModel):
@@ -410,7 +436,11 @@ class KaniConfig(BaseModel):
                 default_provider=self.default_provider,
             )
 
-        if self.embedding is not None and self.embedding.provider:
+        if (
+            self.embedding is not None
+            and self.embedding.effective_mode == "api"
+            and self.embedding.provider
+        ):
             _resolve_provider_for_aux_llm(
                 aux_cfg=self.embedding,
                 providers=self.providers,
@@ -447,7 +477,7 @@ class KaniConfig(BaseModel):
     def embedding_resolved(self) -> tuple[str, str] | None:
         """Return (base_url, api_key) resolved from embedding.provider/default_provider."""
 
-        if self.embedding is None or not self.embedding.enabled:
+        if self.embedding is None or self.embedding.effective_mode != "api":
             return None
         if self.embedding.base_url:
             return self.embedding.base_url, self.embedding.api_key
